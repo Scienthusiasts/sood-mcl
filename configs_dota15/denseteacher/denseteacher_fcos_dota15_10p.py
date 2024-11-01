@@ -12,6 +12,16 @@ train_unsup_label_dir = f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train
 val_image_dir =         f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/val/images'
 val_label_dir =         f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/val/{version}/annfiles'
 test_image_dir =        f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/test/images'
+#类别数
+nc = 16
+# 伪框筛选前1%
+topk = 0.01
+# 无监督分支权重
+unsup_loss_weight = 1.0
+
+
+
+
 # model settings
 detector = dict(
     type='SemiRotatedFCOS',
@@ -36,7 +46,7 @@ detector = dict(
         relu_before_extra_convs=True),
     bbox_head=dict(
         type='SemiRotatedFCOSHead',
-        num_classes=16,
+        num_classes=nc,
         in_channels=256,
         stacked_convs=4,
         feat_channels=256,
@@ -70,15 +80,15 @@ detector = dict(
 model = dict(
     type="RotatedDenseTeacher",
     model=detector,
-    semi_loss=dict(type='RotatedDTLoss', loss_type='origin', bbox_loss_type='l1'),
+    semi_loss=dict(type='RotatedDTLoss', cls_channels=nc, loss_type='origin', bbox_loss_type='l1'),
     train_cfg=dict(
         iter_count=0,
         burn_in_steps=6400,
         sup_weight=1.0,
-        unsup_weight=1.0,
+        unsup_weight=unsup_loss_weight,
         weight_suppress="linear",
         logit_specific_weights=dict(),
-        region_ratio=0.01
+        region_ratio=topk
     ),
     test_cfg=dict(inference_on="teacher"),
 )

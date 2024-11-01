@@ -36,6 +36,7 @@ class RotatedDTBLLoss(nn.Module):
             self.bbox_loss = build_loss(dict(type='RotatedIoULoss', reduction='none'))
         self.loss_type = loss_type
 
+
     def convert_shape(self, logits):
         cls_scores, bbox_preds, angle_preds, centernesses = logits
         assert len(cls_scores) == len(bbox_preds) == len(angle_preds) == len(centernesses)
@@ -53,35 +54,48 @@ class RotatedDTBLLoss(nn.Module):
         ], dim=1).view(-1, 1)
         return cls_scores, bbox_preds, centernesses
 
+
+    def pseudoLabelSelection(self, mode:str, t_cls_scores, k:float):
+        '''伪标签筛选
+        '''
+        with torch.no_grad():
+            # Region Selection
+            topk = int(t_cls_scores.size(0) * k)
+            teacher_probs = t_cls_scores.sigmoid()
+            # NOTE:yan add S_dps to tensorboard
+            S_dps = teacher_probs.mean()
+            # max_vals提取最大的类别置信度
+            max_vals = torch.max(teacher_probs, 1)[0]
+            # 从大到小排序
+            sorted_vals, sorted_inds = torch.topk(max_vals, t_cls_scores.size(0))
+            mask = torch.zeros_like(max_vals)
+            # 前topk个元素为正样本
+            mask[sorted_inds[:topk]] = 1.
+            fg_num = sorted_vals[:topk].sum()
+            pos_mask = mask > 0.
+        
+        return pos_mask, fg_num, S_dps
+
+
     def forward(self, teacher_logits, student_logits, ratio=0.01, img_metas=None, **kwargs):
 
         t_cls_scores, t_bbox_preds, t_centernesses = self.convert_shape(teacher_logits)
         s_cls_scores, s_bbox_preds, s_centernesses = self.convert_shape(student_logits)
+        '''伪标签筛选'''
+        pos_mask, fg_num, S_dps = self.pseudoLabelSelection('topk', t_cls_scores, ratio)
 
-        with torch.no_grad():
-            # Region Selection
-            count_num = int(t_cls_scores.size(0) * 0.03)
-            teacher_probs = t_cls_scores.sigmoid()
-            # NOTE:yan add S_dps to tensorboard
-            S_dps = teacher_probs.mean()
-            max_vals = torch.max(teacher_probs, 1)[0]
-            sorted_vals, sorted_inds = torch.topk(max_vals, t_cls_scores.size(0))
-            mask = torch.zeros_like(max_vals)
-            mask[sorted_inds[:count_num]] = 1.
-            fg_num = sorted_vals[:count_num].sum()
-            b_mask = mask > 0.
-
+        '''损失'''
         loss_cls = QFLv2(
             s_cls_scores.sigmoid(),
             t_cls_scores.sigmoid(),
-            weight=mask,
+            weight=pos_mask,
             reduction="sum",
         ) / fg_num
         if self.bbox_loss_type == 'l1':
             loss_bbox = (self.bbox_loss(
-                s_bbox_preds[b_mask],
-                t_bbox_preds[b_mask],
-            ) * t_centernesses.sigmoid()[b_mask]).mean()
+                s_bbox_preds[pos_mask],
+                t_bbox_preds[pos_mask],
+            ) * t_centernesses.sigmoid()[pos_mask]).mean()
         else:
             all_level_points = self.prior_generator.grid_priors(
                 [featmap.size()[-2:] for featmap in teacher_logits[0]],
@@ -89,12 +103,12 @@ class RotatedDTBLLoss(nn.Module):
                 device=s_bbox_preds.device)
             flatten_points = torch.cat(
                 [points.repeat(len(teacher_logits[0][0]), 1) for points in all_level_points])
-            s_bbox_preds = self.bbox_coder.decode(flatten_points, s_bbox_preds)[b_mask]
-            t_bbox_preds = self.bbox_coder.decode(flatten_points, t_bbox_preds)[b_mask]
+            s_bbox_preds = self.bbox_coder.decode(flatten_points, s_bbox_preds)[pos_mask]
+            t_bbox_preds = self.bbox_coder.decode(flatten_points, t_bbox_preds)[pos_mask]
             loss_bbox = self.bbox_loss(
                 s_bbox_preds,
                 t_bbox_preds,
-            ) * t_centernesses.sigmoid()[b_mask]
+            ) * t_centernesses.sigmoid()[pos_mask]
             nan_indexes = ~torch.isnan(loss_bbox)
             if nan_indexes.sum() == 0:
                 loss_bbox = torch.zeros(1, device=s_cls_scores.device).sum()
@@ -102,8 +116,8 @@ class RotatedDTBLLoss(nn.Module):
                 loss_bbox = loss_bbox[nan_indexes].mean()
 
         loss_centerness = F.binary_cross_entropy(
-            s_centernesses[b_mask].sigmoid(),
-            t_centernesses[b_mask].sigmoid(),
+            s_centernesses[pos_mask].sigmoid(),
+            t_centernesses[pos_mask].sigmoid(),
             reduction='mean'
         )
 
@@ -118,26 +132,29 @@ class RotatedDTBLLoss(nn.Module):
         return unsup_losses
 
 
-def QFLv2(pred_sigmoid,
-          teacher_sigmoid,
-          weight=None,
-          beta=2.0,
-          reduction='mean'):
+def QFLv2(pred_sigmoid, teacher_sigmoid, weight=None, beta=2.0, reduction='mean'):
     # all goes to 0
     pt = pred_sigmoid
-    zerolabel = pt.new_zeros(pt.shape)   # [21824, 16]
-    loss = F.binary_cross_entropy(
-        pred_sigmoid, zerolabel, reduction='none') * pt.pow(beta) 
-    pos = weight > 0
+    zerolabel = pt.new_zeros(pt.shape)
+    # 一开始假设所有样本都是负样本, 因此实际上有对负样本计算损失, 对应的标签是全0
+    loss = F.binary_cross_entropy(pred_sigmoid, zerolabel, reduction='none') * pt.pow(beta)
+    # positive goes to bbox quality
 
-    # positive goes to bbox quality 
-    pt = teacher_sigmoid[pos] - pred_sigmoid[pos]
-    loss[pos] = F.binary_cross_entropy(
-        pred_sigmoid[pos], teacher_sigmoid[pos], reduction='none') * pt.pow(beta)
+    # 这句话有时候会报错, 不知道为啥(内容如下):
+    # ... ...
+    # ../aten/src/ATen/native/cuda/Loss.cu:92: operator(): block: [79,0,0], thread: [118,0,0] Assertion `input_val >= zero && input_val <= one` failed.
+    # RuntimeError: numel: integer multiplication overflow 
+    try:
+        pt = teacher_sigmoid[weight] - pred_sigmoid[weight]
+    except:
+        print(weight.shape, teacher_sigmoid.shape)
+        print(torch.isnan(weight).any(), torch.isnan(teacher_sigmoid).any(), torch.isnan(pred_sigmoid).any())
+        pt = teacher_sigmoid[weight] - pred_sigmoid[weight]
+    # 在所有样本都是负样本的基础上更新那些正样本对应位置为正样本损失
+    loss[weight] = F.binary_cross_entropy(pred_sigmoid[weight], teacher_sigmoid[weight], reduction='none') * pt.pow(beta)
 
-    valid = weight >= 0
     if reduction == "mean":
-        loss = loss[valid].mean()
+        loss = loss.mean()
     elif reduction == "sum":
-        loss = loss[valid].sum()
+        loss = loss.sum()
     return loss

@@ -100,8 +100,8 @@ class RotatedDenseTeacher(RotatedSemiDetector):
                     unsup_losses[key] *= val
             for key, val in unsup_losses.items():
                 if key[:4] == 'loss':
-                    # losses[f"{key}_unsup"] = unsup_weight * val
-                    losses[f"{key}_unsup"] = val
+                    losses[f"{key}_unsup"] = unsup_weight * val
+                    # losses[f"{key}_unsup"] = val
                 else:
                     losses[key] = val
         self.iter_count += 1

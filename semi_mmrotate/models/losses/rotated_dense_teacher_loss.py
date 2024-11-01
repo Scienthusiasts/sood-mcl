@@ -60,7 +60,7 @@ class RotatedDTLoss(nn.Module):
 
         with torch.no_grad():
             # Region Selection
-            count_num = int(t_cls_scores.size(0) * 0.03)
+            count_num = int(t_cls_scores.size(0) * ratio)
             teacher_probs = t_cls_scores.sigmoid()
             # NOTE:yan add S_dps to tensorboard
             S_dps = teacher_probs.mean()

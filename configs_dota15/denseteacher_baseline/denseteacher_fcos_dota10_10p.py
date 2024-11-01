@@ -2,9 +2,10 @@ import torchvision.transforms as transforms
 from copy import deepcopy
 
 
-angle_version = 'le90'
+
+# DOTA数据集版本(1.0 or 1.5)
 version = 1.0
-# 数据集路径:
+# 数据集路径
 train_sup_image_dir =   f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train_10per/{version}/labeled/images/'
 train_sup_label_dir =   f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train_10per/{version}/labeled/annfiles/'
 train_unsup_image_dir = f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train_10per/{version}/unlabeled/images/'
@@ -14,8 +15,15 @@ val_label_dir =         f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/val/{
 test_image_dir =        f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/test/images'
 # 类别数
 nc = 15
+# 伪标签筛选超参
+semi_loss = dict(type='RotatedDTBLLoss', cls_channels=nc, loss_type='origin', bbox_loss_type='l1')
+# 伪框筛选前1%
+topk = 0.01
+# 无监督分支权重
+unsup_loss_weight = 1.0
 
 
+angle_version = 'le90'
 # model settings
 detector = dict(
     type='SemiRotatedFCOS',
@@ -74,15 +82,15 @@ detector = dict(
 model = dict(
     type="RotatedDTBaseline",
     model=detector,
-    semi_loss=dict(type='RotatedDTBLLoss', cls_channels=nc, loss_type='origin', bbox_loss_type='l1'),
+    semi_loss=semi_loss,
     train_cfg=dict(
         iter_count=0,
         burn_in_steps=6400,
         sup_weight=1.0,
-        unsup_weight=0.0,
+        unsup_weight=unsup_loss_weight,
         weight_suppress="linear",
         logit_specific_weights=dict(),
-        region_ratio=0.01
+        region_ratio=topk
     ),
     test_cfg=dict(inference_on="teacher"),
 )

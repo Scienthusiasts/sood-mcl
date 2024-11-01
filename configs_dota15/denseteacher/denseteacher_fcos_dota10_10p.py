@@ -13,7 +13,14 @@ val_image_dir =         f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/val/i
 val_label_dir =         f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/val/{version}/annfiles'
 test_image_dir =        f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/test/images'
 # 类别数
-nc=15
+nc = 15
+# 伪框筛选前1%
+topk = 0.01
+# 无监督分支权重
+unsup_loss_weight = 0.0
+
+
+
 
 # model settings
 detector = dict(
@@ -78,10 +85,10 @@ model = dict(
         iter_count=0,
         burn_in_steps=6400,
         sup_weight=1.0,
-        unsup_weight=1.0,
+        unsup_weight=unsup_loss_weight,
         weight_suppress="linear",
         logit_specific_weights=dict(),
-        region_ratio=0.01
+        region_ratio=topk
     ),
     test_cfg=dict(inference_on="teacher"),
 )
