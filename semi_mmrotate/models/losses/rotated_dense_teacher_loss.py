@@ -62,6 +62,8 @@ class RotatedDTLoss(nn.Module):
             # Region Selection
             count_num = int(t_cls_scores.size(0) * 0.03)
             teacher_probs = t_cls_scores.sigmoid()
+            # NOTE:yan add S_dps to tensorboard
+            S_dps = teacher_probs.mean()
             max_vals = torch.max(teacher_probs, 1)[0]
             sorted_vals, sorted_inds = torch.topk(max_vals, t_cls_scores.size(0))
             mask = torch.zeros_like(max_vals)
@@ -108,7 +110,9 @@ class RotatedDTLoss(nn.Module):
         unsup_losses = dict(
             loss_cls=loss_cls,
             loss_bbox=loss_bbox,
-            loss_centerness=loss_centerness
+            loss_centerness=loss_centerness,
+            # NOTE:yan add S_dps to tensorboard
+            S_dps=S_dps
         )
 
         return unsup_losses

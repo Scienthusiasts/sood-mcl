@@ -51,6 +51,8 @@ class RotatedMCLLoss(nn.Module):
         s_cls_scores, s_bbox_preds, s_centernesses = tuple(s_logits_list)
         with torch.no_grad():
             teacher_probs = t_cls_scores.sigmoid()
+            # NOTE:yan add S_dps to tensorboard
+            S_dps = teacher_probs.mean()
             teacher_bboxes = t_bbox_preds
             teacher_centernesses = t_centernesses.sigmoid()
 
@@ -115,8 +117,8 @@ class RotatedMCLLoss(nn.Module):
                 teacher_centernesses[b_mask],
                 reduction='none'
             )* weight_mask[:, None][b_mask]).mean() * 10
-
-        return loss_cls, loss_bbox, loss_centerness
+        # NOTE:yan add S_dps to tensorboard
+        return loss_cls, loss_bbox, loss_centerness, S_dps
 
     def forward(self, teacher_logits, student_logits, img_metas=None, alone_angle=True):
 
@@ -132,16 +134,19 @@ class RotatedMCLLoss(nn.Module):
         level_inds = level_inds[:2]
 
         # get labels and bbox_targets of each image
-        losses_list = multi_apply(
+        # NOTE:yan add S_dps to tensorboard
+        loss_cls, loss_bbox, loss_centerness, S_dps = multi_apply(
                             self.loss_single,
                             img_t_logits_list,
                             img_s_logits_list,
                             level_inds=level_inds)
 
         unsup_losses = dict(
-            loss_cls=sum(losses_list[0]) / len(losses_list[0]),
-            loss_bbox=sum(losses_list[1]) / len(losses_list[1]),
-            loss_centerness=sum(losses_list[2]) / len(losses_list[2])
+            loss_cls=sum(loss_cls) / len(loss_cls),
+            loss_bbox=sum(loss_bbox) / len(loss_bbox),
+            loss_centerness=sum(loss_centerness) / len(loss_centerness),
+            # NOTE:yan add S_dps to tensorboard
+            S_dps=S_dps
         )
 
         return unsup_losses

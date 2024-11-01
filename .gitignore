@@ -1,0 +1,5 @@
+log/
+debug.log
+run.sh
+*.pt
+terminal_log.log

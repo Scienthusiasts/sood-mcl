@@ -221,7 +221,7 @@ lr_config = dict(
     step=[120000, 160000])
 # 120k iters is enough for DOTA
 runner = dict(type="IterBasedRunner", max_iters=180000)
-checkpoint_config = dict(by_epoch=False, interval=3200, max_keep_ckpts=5)
+checkpoint_config = dict(by_epoch=False, interval=3200, max_keep_ckpts=50)
 
 # Default: disable fp16 training
 # fp16 = dict(loss_scale="dynamic")
