@@ -21,7 +21,7 @@ CLASSES = ('large-vehicle', 'swimming-pool', 'helicopter', 'bridge', 'plane',
 
 @ROTATED_LOSSES.register_module()
 class RotatedDTBLLoss(nn.Module):
-    def __init__(self, cls_channels=16, loss_type='origin', bbox_loss_type='l1'):
+    def __init__(self, p_selection:dict, cls_channels=16, loss_type='origin', bbox_loss_type='l1'):
         super(RotatedDTBLLoss, self).__init__()
         self.cls_channels = cls_channels
         assert bbox_loss_type in ['l1', 'iou']
@@ -35,6 +35,8 @@ class RotatedDTBLLoss(nn.Module):
             self.prior_generator = MlvlPointGenerator([8, 16, 32, 64, 128])
             self.bbox_loss = build_loss(dict(type='RotatedIoULoss', reduction='none'))
         self.loss_type = loss_type
+        # 伪标签筛选策略超参, added by yan
+        self.p_selection = p_selection
 
 
     def convert_shape(self, logits):
@@ -55,48 +57,73 @@ class RotatedDTBLLoss(nn.Module):
         return cls_scores, bbox_preds, centernesses
 
 
-    def pseudoLabelSelection(self, mode:str, t_cls_scores, k:float):
-        '''伪标签筛选
+    def pseudoLabelSelection(self, mode:str, t_cls_scores, ratio:float, beta:float):
+        '''伪标签筛选 added by yan
+            Args:
+                mode:         伪标签筛选策略
+                t_cls_scores: 网络预测整张特征图的分类置信度 [bs * h * w, cat_num]
+                ratio:        当mode=='topk'时, 这个参数代表top k% 的 k%
+                beta:         当mode=='top_dps'时, beta为S_pds的权重系数
+            Returns:
+                pos_mask: 正样本mask 
+                fg_num:   正样本的数量
+                S_pds:    当前batch的平均联合置信度
         '''
-        with torch.no_grad():
-            # Region Selection
-            topk = int(t_cls_scores.size(0) * k)
-            teacher_probs = t_cls_scores.sigmoid()
-            # NOTE:yan add S_dps to tensorboard
-            S_dps = teacher_probs.mean()
-            # max_vals提取最大的类别置信度
-            max_vals = torch.max(teacher_probs, 1)[0]
-            # 从大到小排序
-            sorted_vals, sorted_inds = torch.topk(max_vals, t_cls_scores.size(0))
-            mask = torch.zeros_like(max_vals)
-            # 前topk个元素为正样本
-            mask[sorted_inds[:topk]] = 1.
-            fg_num = sorted_vals[:topk].sum()
-            pos_mask = mask > 0.
+        teacher_probs = t_cls_scores.sigmoid()
+        # t_scores提取最大的类别置信度 [bs * h * w, cat_num] -> [bs * h * w]
+        t_scores = torch.max(teacher_probs, 1)[0]
+        # S_dps是最大的类别置信度特征图的期望
+        S_dps = t_scores.mean()
+        '''根据伪标签筛选策略确定k'''
+        if mode == 'topk':
+            ratio = ratio
+        if mode == 'top_dps':
+            ratio = S_dps * beta
+        # 确定topk的正样本数量(有一个最小值为2)
+        topk_num = max(int(t_cls_scores.size(0) * ratio), 2)
+        # 从大到小排序
+        sorted_vals, sorted_inds = torch.topk(t_scores, t_cls_scores.size(0))
+        # 创建mask, 指定哪些样本为正样本, 哪些样本为负样本
+        mask = torch.zeros_like(t_scores)
+        # 前topk个元素为正样本
+        mask[sorted_inds[:topk_num]] = 1.
+        # 正样本数量
+        fg_num = sorted_vals[:topk_num].sum()
+        # 获得正样本mask
+        pos_mask = mask > 0.
         
         return pos_mask, fg_num, S_dps
 
 
-    def forward(self, teacher_logits, student_logits, ratio=0.01, img_metas=None, **kwargs):
+
+    def forward(self, teacher_logits, student_logits, img_metas=None, **kwargs):
 
         t_cls_scores, t_bbox_preds, t_centernesses = self.convert_shape(teacher_logits)
         s_cls_scores, s_bbox_preds, s_centernesses = self.convert_shape(student_logits)
         '''伪标签筛选'''
-        pos_mask, fg_num, S_dps = self.pseudoLabelSelection('topk', t_cls_scores, ratio)
+        with torch.no_grad():
+            mode = self.p_selection.get('mode', 'topk')
+            k = self.p_selection.get('k', 0.01)
+            beta = self.p_selection.get('beta', 1.0)
+            pos_mask, fg_num, S_dps = self.pseudoLabelSelection(mode, t_cls_scores, k, beta)
 
         '''损失'''
+        # 无监督分类损失
         loss_cls = QFLv2(
             s_cls_scores.sigmoid(),
             t_cls_scores.sigmoid(),
             weight=pos_mask,
             reduction="sum",
         ) / fg_num
+
+        # 无监督回归损失
         if self.bbox_loss_type == 'l1':
             loss_bbox = (self.bbox_loss(
                 s_bbox_preds[pos_mask],
                 t_bbox_preds[pos_mask],
             ) * t_centernesses.sigmoid()[pos_mask]).mean()
         else:
+            # 不是L1就是IoU损失:
             all_level_points = self.prior_generator.grid_priors(
                 [featmap.size()[-2:] for featmap in teacher_logits[0]],
                 dtype=s_bbox_preds.dtype,
@@ -115,6 +142,7 @@ class RotatedDTBLLoss(nn.Module):
             else:
                 loss_bbox = loss_bbox[nan_indexes].mean()
 
+        # 无监督centerness损失
         loss_centerness = F.binary_cross_entropy(
             s_centernesses[pos_mask].sigmoid(),
             t_centernesses[pos_mask].sigmoid(),

@@ -1,8 +1,34 @@
-angle_version = 'le90'
-
 import torchvision.transforms as transforms
 from copy import deepcopy
 
+
+
+# DOTA数据集版本(1.0 or 1.5)
+version = 1.0
+# 数据集路径
+train_sup_image_dir =   f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train_10per/{version}/labeled/images/'
+train_sup_label_dir =   f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train_10per/{version}/labeled/annfiles/'
+train_unsup_image_dir = f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train_10per/{version}/unlabeled/images/'
+train_unsup_label_dir = f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train_10per/{version}/unlabeled/empty_annfiles/'
+val_image_dir =         f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/val/images'
+val_label_dir =         f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/val/{version}/annfiles'
+test_image_dir =        f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/test/images'
+# 类别数
+nc = 15
+# 伪标签筛选超参
+semi_loss = dict(type='RotatedDTBLLoss', cls_channels=nc, loss_type='origin', bbox_loss_type='l1', 
+                 # 伪框筛选前1%
+                 p_selection = dict(mode='topk', k=0.01, beta=1.0),
+                 )
+# 无监督分支权重
+unsup_loss_weight = 1.0
+# just for debug:
+burn_in_steps = 64
+load_from = '/data/yht/code/sood-mcl/log/dt/DOTA1.0/10per/iter_120000.pth'
+
+
+
+angle_version = 'le90'
 # model settings
 detector = dict(
     type='SemiRotatedFCOS',
@@ -27,7 +53,7 @@ detector = dict(
         relu_before_extra_convs=True),
     bbox_head=dict(
         type='SemiRotatedFCOSHead',
-        num_classes=16,
+        num_classes=nc,
         in_channels=256,
         stacked_convs=4,
         feat_channels=256,
@@ -61,15 +87,14 @@ detector = dict(
 model = dict(
     type="RotatedDTBaseline",
     model=detector,
-    semi_loss=dict(type='RotatedDTBLLoss', loss_type='origin', bbox_loss_type='l1'),
+    semi_loss=semi_loss,
     train_cfg=dict(
         iter_count=0,
-        burn_in_steps=12800,
+        burn_in_steps=burn_in_steps,
         sup_weight=1.0,
-        unsup_weight=1.0,
+        unsup_weight=unsup_loss_weight,
         weight_suppress="linear",
         logit_specific_weights=dict(),
-        region_ratio=0.03
     ),
     test_cfg=dict(inference_on="teacher"),
 )
@@ -150,12 +175,11 @@ test_pipeline = [
         ])
 ]
 
-dataset_type = 'DOTADataset' 
+dataset_type = 'DOTADataset'  
 classes = ('plane', 'baseball-diamond', 'bridge', 'ground-track-field',
            'small-vehicle', 'large-vehicle', 'ship', 'tennis-court',
            'basketball-court', 'storage-tank', 'soccer-ball-field',
-           'roundabout', 'harbor', 'swimming-pool', 'helicopter',
-           'container-crane')
+           'roundabout', 'harbor', 'swimming-pool', 'helicopter')
 data = dict(
     samples_per_gpu=3,
     workers_per_gpu=5,
@@ -163,15 +187,15 @@ data = dict(
         type="SemiDataset",
         sup=dict(
             type=dataset_type,
-            ann_file="/workspace/DOTA/v15/semi/train_30p_labeled/labelTxt/",
-            img_prefix="/workspace/DOTA/v15/semi/train_30p_labeled/images/",
+            ann_file=train_sup_label_dir,
+            img_prefix=train_sup_image_dir,
             classes=classes,
             pipeline=sup_pipeline,
         ),
         unsup=dict(
             type=dataset_type,
-            ann_file="/workspace/DOTA/v15/semi/train_30p_unlabeled/labelTxt/",
-            img_prefix="/workspace/DOTA/v15/semi/train_30p_unlabeled/images/",
+            ann_file=train_unsup_label_dir,
+            img_prefix=train_unsup_image_dir,
             classes=classes,
             pipeline=unsup_pipeline,
             filter_empty_gt=False,
@@ -179,15 +203,15 @@ data = dict(
     ),
     val=dict(
         type=dataset_type,
-        img_prefix="/workspace/DOTA/v15/val_split/images/",
-        ann_file='/workspace/DOTA/v15/val_split/labelTxt/',
+        img_prefix=val_image_dir,
+        ann_file=val_label_dir,
         classes=classes,
         pipeline=test_pipeline
     ),
     test=dict(
         type=dataset_type,
-        img_prefix="/workspace/DOTA/v15/val_split/images/",
-        ann_file='/workspace/DOTA/v15/val_split/labelTxt/',
+        img_prefix=val_image_dir,
+        ann_file=val_label_dir,
         classes=classes,
         pipeline=test_pipeline,
     ),
@@ -220,9 +244,9 @@ lr_config = dict(
     warmup='linear',
     warmup_iters=500,
     warmup_ratio=1.0 / 3,
-    step=[120000, 160000])
+    step=120000)
 # 120k iters is enough for DOTA
-runner = dict(type="IterBasedRunner", max_iters=180000)
+runner = dict(type="IterBasedRunner", max_iters=120000)
 checkpoint_config = dict(by_epoch=False, interval=3200, max_keep_ckpts=50)
 
 # Default: disable fp16 training
@@ -233,6 +257,7 @@ log_config = dict(
     interval=50,
     hooks=[
         dict(type="TextLoggerHook"),
+        dict(type='TensorboardLoggerHook'),
         # dict(
         #     type="WandbLoggerHook",
         #     init_kwargs=dict(
@@ -246,7 +271,6 @@ log_config = dict(
 
 dist_params = dict(backend='nccl')
 log_level = 'INFO'
-load_from = None
 resume_from = None
 workflow = [('train', 1)]   # mode, iters
 

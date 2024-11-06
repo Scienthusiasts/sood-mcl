@@ -1,4 +1,5 @@
 log/
+__pycache__
 debug.log
 run.sh
 *.pt

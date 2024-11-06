@@ -17,7 +17,7 @@ nc = 15
 # 伪框筛选前1%
 topk = 0.01
 # 无监督分支权重
-unsup_loss_weight = 0.0
+unsup_loss_weight = 1.0
 
 
 

@@ -16,9 +16,11 @@ test_image_dir =        f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/test/
 # 类别数
 nc = 15
 # 伪标签筛选超参
-semi_loss = dict(type='RotatedDTBLLoss', cls_channels=nc, loss_type='origin', bbox_loss_type='l1')
-# 伪框筛选前1%
-topk = 0.01
+# 伪标签筛选超参
+semi_loss = dict(type='RotatedDTBLLoss', cls_channels=nc, loss_type='origin', bbox_loss_type='l1', 
+                 # 伪框筛选前1%
+                 p_selection = dict(mode='topk', k=0.01, beta=1.0),
+                 )
 # 无监督分支权重
 unsup_loss_weight = 1.0
 
@@ -90,7 +92,6 @@ model = dict(
         unsup_weight=unsup_loss_weight,
         weight_suppress="linear",
         logit_specific_weights=dict(),
-        region_ratio=topk
     ),
     test_cfg=dict(inference_on="teacher"),
 )

@@ -30,7 +30,6 @@ class RotatedDTBaseline(RotatedSemiDetector):
             self.unsup_weight = train_cfg.get("unsup_weight", 1.0)
             self.weight_suppress = train_cfg.get("weight_suppress", "linear")
             self.logit_specific_weights = train_cfg.get("logit_specific_weights")
-            self.region_ratio = train_cfg.get("region_ratio")
         self.symmetry_aware = symmetry_aware
 
     def forward_train(self, imgs, img_metas, **kwargs):
@@ -86,14 +85,18 @@ class RotatedDTBaseline(RotatedSemiDetector):
                 if self.iter_count <= target:
                     unsup_weight *= (self.iter_count - self.burn_in_steps) / self.burn_in_steps
 
+            # get student data
+            # NOTE: yan, 这里可以调整教师和学生增强的顺序
+            aug_orders = ['unsup_strong', 'unsup_weak']     # 1.正常
+            # aug_orders = ['unsup_weak', 'unsup_strong']   # 2.调换
+            # aug_orders = ['unsup_strong', 'unsup_strong'] # 3.一致(强)
+            # aug_orders = ['unsup_weak', 'unsup_weak']     # 4.一致(弱)
             with torch.no_grad():
                 # get teacher data
-                teacher_logits = self.teacher.forward_train(
-                    get_data=True, **format_data['unsup_weak'])
+                teacher_logits = self.teacher.forward_train(get_data=True, **format_data[aug_orders[1]])
 
-            # get student data
-            student_logits = self.student.forward_train(get_data=True, **format_data['unsup_strong'])
-            unsup_losses = self.semi_loss(teacher_logits, student_logits, ratio=self.region_ratio, img_metas=format_data['unsup_weak'])
+            student_logits = self.student.forward_train(get_data=True, **format_data[aug_orders[0]])
+            unsup_losses = self.semi_loss(teacher_logits, student_logits, img_metas=format_data[aug_orders[1]])
 
             for key, val in self.logit_specific_weights.items():
                 if key in unsup_losses.keys():
