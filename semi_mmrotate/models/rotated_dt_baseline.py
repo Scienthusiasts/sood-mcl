@@ -7,11 +7,13 @@ import numpy as np
 from .rotated_semi_detector import RotatedSemiDetector
 from mmrotate.models.builder import ROTATED_DETECTORS
 from mmrotate.models import build_detector
+# yan prototype实例
+from .prototype.prototype import FCOSPrototype
 
 
 @ROTATED_DETECTORS.register_module()
 class RotatedDTBaseline(RotatedSemiDetector):
-    def __init__(self, model: dict, semi_loss, train_cfg=None, test_cfg=None, symmetry_aware=False):
+    def __init__(self, model: dict, prototype:dict, semi_loss, train_cfg=None, test_cfg=None, symmetry_aware=False, pretrained=None):
         super(RotatedDTBaseline, self).__init__(
             dict(teacher=build_detector(model), student=build_detector(model)),
             semi_loss,
@@ -31,6 +33,20 @@ class RotatedDTBaseline(RotatedSemiDetector):
             self.weight_suppress = train_cfg.get("weight_suppress", "linear")
             self.logit_specific_weights = train_cfg.get("logit_specific_weights")
         self.symmetry_aware = symmetry_aware
+        # NOTE: prototype, added by yan
+        # self.prototype = FCOSPrototype(**prototype)
+
+
+    def convert_shape(self, logits):
+        '''将模型输出logit reshape, added by yan
+        '''
+        bs = logits[0].shape[0]   
+
+        # [[bs, 256, h1, w1], ...[bs, 256, h5, w5]] -> [total_grid_num, 256]
+        reshape_logits = [x.permute(0, 2, 3, 1).reshape(bs, -1, 256) for x in logits]
+        reshape_logits = torch.cat(reshape_logits, dim=1).view(-1, 256)
+        return reshape_logits
+    
 
     def forward_train(self, imgs, img_metas, **kwargs):
         super(RotatedDTBaseline, self).forward_train(imgs, img_metas, **kwargs)
@@ -56,9 +72,20 @@ class RotatedDTBaseline(RotatedSemiDetector):
         for key in format_data.keys():
             format_data[key]['img'] = torch.stack(format_data[key]['img'], dim=0)
             # print(f"{key}: {format_data[key]['img'].shape}")
+
+        '''全监督分支'''
         losses = dict()
         # supervised forward
-        sup_losses = self.student.forward_train(**format_data['sup'])
+        # NOTE:yan, 这里额外回传类别GT, 正样本索引, fpn的多尺度特征, 用于计算prototype
+        sup_losses_and_data, sup_fpn_feat = self.student.forward_train(return_fpn_feat=True, **format_data['sup'])
+        sup_fpn_feat = self.convert_shape(sup_fpn_feat)
+        sup_losses, cat_labels, pos_inds = sup_losses_and_data
+
+        '''更新prototypes'''
+        # prototype_loss = self.prototype(sup_fpn_feat[pos_inds].detach(), cat_labels[pos_inds])
+        
+        # 组织全监督损失
+        # losses["loss_prototype_sup"] = self.sup_weight * prototype_loss
         for key, val in sup_losses.items():
             if key[:4] == 'loss':
                 if isinstance(val, list):
@@ -67,6 +94,8 @@ class RotatedDTBaseline(RotatedSemiDetector):
                     losses[f"{key}_sup"] = self.sup_weight * val
             else:
                 losses[key] = val
+
+        '''无监督分支'''
         if self.iter_count > self.burn_in_steps:
             # Train Logic
             # unsupervised forward
@@ -93,11 +122,18 @@ class RotatedDTBaseline(RotatedSemiDetector):
             # aug_orders = ['unsup_weak', 'unsup_weak']     # 4.一致(弱)
             with torch.no_grad():
                 # get teacher data
-                teacher_logits = self.teacher.forward_train(get_data=True, **format_data[aug_orders[1]])
-
-            student_logits = self.student.forward_train(get_data=True, **format_data[aug_orders[0]])
+                # NOTE:yan, 这里额外回传类别GT, 正样本索引, fpn的多尺度特征, 用于计算prototype
+                teacher_logits, t_fpn_feat = self.teacher.forward_train(return_fpn_feat=True, get_data=True, **format_data[aug_orders[1]])
+                teacher_logits = list(teacher_logits)
+                teacher_logits.append(t_fpn_feat)
+            # NOTE:yan, 这里额外回传类别GT, 正样本索引, fpn的多尺度特征, 用于计算prototype
+            student_logits, s_fpn_feat = self.student.forward_train(return_fpn_feat=True, get_data=True, **format_data[aug_orders[0]])
+            student_logits = list(student_logits)
+            student_logits.append(s_fpn_feat)
+            # 半监督分支计算损失
             unsup_losses = self.semi_loss(teacher_logits, student_logits, img_metas=format_data[aug_orders[1]])
 
+            # 组织无监督损失
             for key, val in self.logit_specific_weights.items():
                 if key in unsup_losses.keys():
                     unsup_losses[key] *= val
@@ -110,6 +146,7 @@ class RotatedDTBaseline(RotatedSemiDetector):
         self.iter_count += 1
 
         return losses
+
 
     def _load_from_state_dict(
         self,

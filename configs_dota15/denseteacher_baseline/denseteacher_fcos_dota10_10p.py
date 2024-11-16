@@ -16,11 +16,12 @@ test_image_dir =        f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/test/
 # 类别数
 nc = 15
 # 伪标签筛选超参
-# 伪标签筛选超参
 semi_loss = dict(type='RotatedDTBLLoss', cls_channels=nc, loss_type='origin', bbox_loss_type='l1', 
-                 # 伪框筛选前1%
-                 p_selection = dict(mode='topk', k=0.01, beta=1.0),
+                 # 'topk', 'top_dps', 'catwise_top_dps', 'global_w'
+                 p_selection = dict(mode='global_w', k=0.01, beta=1.0),
                  )
+# prototype原型
+prototype = dict(cat_nums=nc, mode='contrast')
 # 无监督分支权重
 unsup_loss_weight = 1.0
 
@@ -49,7 +50,7 @@ detector = dict(
         num_outs=5,
         relu_before_extra_convs=True),
     bbox_head=dict(
-        type='SemiRotatedFCOSHead',
+        type='SemiRotatedBLFCOSHead',
         num_classes=nc,
         in_channels=256,
         stacked_convs=4,
@@ -84,6 +85,8 @@ detector = dict(
 model = dict(
     type="RotatedDTBaseline",
     model=detector,
+    # newly added
+    prototype=prototype,
     semi_loss=semi_loss,
     train_cfg=dict(
         iter_count=0,

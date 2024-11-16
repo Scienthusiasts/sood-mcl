@@ -59,7 +59,7 @@ def split_img_vis_list(list_file, img_dir, ann_dir, out_dir):
 if __name__ == '__main__':
     # example
     per = 10
-    version = 1.0
+    version = 1.5
     list_file = f'/data/yht/code/sood-mcl/data_lists/{per}p_list.json'
     img_dir =   f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train/images'
     ann_dir =   f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train/{version}/annfiles'

@@ -1,0 +1,44 @@
+
+
+
+# 如何生成partial labeled 数据集
+run /data/yht/code/sood-mcl/split_data_via_list.py
+
+
+# 如何修改log指标小数点保存位数
+/data/yht/code/sood-mcl/mmrotate-0.3.4/mmrotate/core/evaluation/eval_map.py -> print_map_summary() -> 修改为:.4f
+
+
+# 如何将precision和recall指标显示到log和tensorboard中
+# TensorboardLoggerHook 会自动将 evaluate() 计算的指标记录到 TensorBoard:
+/data/yht/code/sood-mcl/mmrotate-0.3.4/mmrotate/datasets/dota.py -> evaluate() 修改eval_results字典, 加上precision和recall -> 修改eval_rbbox_map()
+/data/yht/code/sood-mcl/mmrotate-0.3.4/mmrotate/core/evaluation/eval_map.py -> eval_rbbox_map() -> print_map_summary()
+/data/yht/code/sood-mcl/mmrotate-0.3.4/mmrotate/core/evaluation/eval_map.py -> print_map_summary() -> 在这个函数里添加recall和precision 计算指标
+
+
+# 如何修改伪框筛选策略
+/data/yht/code/sood-mcl/semi_mmrotate/models/losses/rotated_dt_baseline_loss.py ->添加pseudoLabelSelection(), 返回pos_mask, neg_mask, weight_mask, fg_num, S_dps
+/data/yht/code/sood-mcl/semi_mmrotate/models/losses/rotated_dt_baseline_loss.py -> forward() 调用pseudoLabelSelection得到正负样本mask和S_dps等
+
+
+# 将S_dps记录到log和tensorboard中
+/data/yht/code/sood-mcl/semi_mmrotate/models/losses/rotated_dt_baseline_loss.py -> forward() 将S_dps作为loss的一个字段返回即可
+
+
+# 如何加prototype到模型中
+(1) 首先获取FPN的多尺度特征图
+/data/yht/code/sood-mcl/semi_mmrotate/models/rotated_dt_baseline.py -> forward_train() 修改三个地方(teacher和student的forward_train(), 返回多尺度特征图)
+/data/yht/code/sood-mcl/semi_mmrotate/models/detectors/semi_rotated_fcos.py -> forward_train() 添加return_fpn_feat字段, =True时返回FPN特征图x
+(2) 返回全特征图的的类别GT, 和正样本索引
+/data/yht/code/sood-mcl/semi_mmrotate/models/rotated_dt_baseline.py -> forward_train() 修改三个地方(teacher和student的forward_train())
+/data/yht/code/sood-mcl/semi_mmrotate/models/detectors/semi_rotated_fcos.py -> forward_train() 这里其实无需修改, 数据流包含在logits中返回
+/data/yht/code/sood-mcl/semi_mmrotate/models/dense_heads/semi_rotated_baseline_fcos_head.py -> forward_train(), 额外返回cat_labels, pos_inds
+/data/yht/code/sood-mcl/semi_mmrotate/models/dense_heads/semi_rotated_baseline_fcos_head.py -> loss(), 在返回loss字典那里额外返回flatten_labels, pos_inds
+(3) 添加prototype类
+添加/data/yht/code/sood-mcl/semi_mmrotate/models/prototype/prototype.py 
+/data/yht/code/sood-mcl/semi_mmrotate/models/rotated_dt_baseline.py 导入: from .prototype.prototype import FCOSPrototype
+/data/yht/code/sood-mcl/semi_mmrotate/models/rotated_dt_baseline.py -> __init__(), 添加prototype字段(也得在config文件里添加), 添加 self.prototype = FCOSPrototype(**prototype)
+/data/yht/code/sood-mcl/semi_mmrotate/models/rotated_dt_baseline.py -> forward_train(), 添加prototype更新逻辑(prototype loss)
+...未完待续(目前的问题, 只更新prototype不用prototype去微调特征图也会存在性能降低的bug)
+
+

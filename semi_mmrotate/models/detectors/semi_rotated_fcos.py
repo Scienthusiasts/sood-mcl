@@ -23,7 +23,9 @@ class SemiRotatedFCOS(RotatedFCOS):
                       gt_labels,
                       gt_bboxes_ignore=None,
                       get_data=False,
-                      get_pred=False):
+                      get_pred=False,
+                      return_fpn_feat=False
+                      ):
         """
         Args:
             img (Tensor): Input images of shape (N, C, H, W).
@@ -45,15 +47,30 @@ class SemiRotatedFCOS(RotatedFCOS):
             dict[str, Tensor]: A dictionary of loss components.
         """
         super(RotatedSingleStageDetector, self).forward_train(img, img_metas)
+        # torch.Size([2, 256, 128, 128])
+        # torch.Size([2, 256, 64, 64])
+        # torch.Size([2, 256, 32, 32])
+        # torch.Size([2, 256, 16, 16])
+        # torch.Size([2, 256, 8, 8])
         x = self.extract_feat(img)
         if not get_pred:
-            return self.bbox_head.forward_train(x, img_metas, gt_bboxes,
-                                                gt_labels, gt_bboxes_ignore,
-                                                get_data=get_data)
+            logits = self.bbox_head.forward_train(x, img_metas, gt_bboxes, gt_labels, gt_bboxes_ignore, get_data=get_data)
+            # NOTE: yan, 将fpn的特征也传回, 目的是为了更新prototype
+            if return_fpn_feat:
+                x = [lvl_x.detach() for lvl_x in x]
+                return logits, x
+            else:
+                return logits
+        
         with torch.no_grad():
             self.eval()
             bbox_results = self.simple_test(img, img_metas, rescale=True)
             self.train()
-        logits = self.bbox_head.forward_train(
-            x, img_metas, gt_bboxes, gt_labels, gt_bboxes_ignore, get_data=get_data)
-        return logits, bbox_results
+
+        logits = self.bbox_head.forward_train(x, img_metas, gt_bboxes, gt_labels, gt_bboxes_ignore, get_data=get_data)
+        # NOTE: yan, 将fpn的特征也传回, 目的是为了更新prototype
+        if return_fpn_feat:
+            x = [lvl_x.detach() for lvl_x in x]
+            return logits, x.detach(), bbox_results
+        else:
+            return logits, bbox_results
