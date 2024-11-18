@@ -6,8 +6,8 @@ from copy import deepcopy
 # DOTA数据集版本(1.0 or 1.5)
 version = 1.0
 # 数据集路径
-train_sup_image_dir =   f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train_10per/{version}/labeled/images/'
-train_sup_label_dir =   f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train_10per/{version}/labeled/annfiles/'
+train_sup_image_dir =   f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train/images/'
+train_sup_label_dir =   f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train/{version}/annfiles/'
 train_unsup_image_dir = f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train_10per/{version}/unlabeled/images/'
 train_unsup_label_dir = f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train_10per/{version}/unlabeled/empty_annfiles/'
 val_image_dir =         f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/val/images'
@@ -90,7 +90,7 @@ model = dict(
     semi_loss=semi_loss,
     train_cfg=dict(
         iter_count=0,
-        burn_in_steps=6400,
+        burn_in_steps=120000,
         sup_weight=1.0,
         unsup_weight=unsup_loss_weight,
         weight_suppress="linear",

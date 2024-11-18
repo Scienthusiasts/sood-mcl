@@ -1,4 +1,13 @@
-
+# 推理整个验证集并可视化:
+python test.py \
+configs_dota15/denseteacher_baseline/denseteacher_fcos_dota10_10p.py \
+log/dtbaseline/DOTA1.0/10per_topk/k-1.0/latest.pth \
+--work-dir log/dtbaseline/DOTA1.0/10per/eval_result \
+--gpu-ids 1 \
+--eval mAP \
+--out log/dtbaseline/DOTA1.0/10per/eval_result/eval.pkl \
+--get-feature-map True \
+--show-dir log/dtbaseline/DOTA1.0/10per/eval_result/vis_result 
 
 
 # 如何生成partial labeled 数据集
@@ -28,10 +37,10 @@ run /data/yht/code/sood-mcl/split_data_via_list.py
 # 如何加prototype到模型中
 (1) 首先获取FPN的多尺度特征图
 /data/yht/code/sood-mcl/semi_mmrotate/models/rotated_dt_baseline.py -> forward_train() 修改三个地方(teacher和student的forward_train(), 返回多尺度特征图)
-/data/yht/code/sood-mcl/semi_mmrotate/models/detectors/semi_rotated_fcos.py -> forward_train() 添加return_fpn_feat字段, =True时返回FPN特征图x
+/data/yht/code/sood-mcl/semi_mmrotate/models/detectors/semi_rotated_baseline_fcos.py -> forward_train() 添加return_fpn_feat字段, =True时返回FPN特征图x
 (2) 返回全特征图的的类别GT, 和正样本索引
 /data/yht/code/sood-mcl/semi_mmrotate/models/rotated_dt_baseline.py -> forward_train() 修改三个地方(teacher和student的forward_train())
-/data/yht/code/sood-mcl/semi_mmrotate/models/detectors/semi_rotated_fcos.py -> forward_train() 这里其实无需修改, 数据流包含在logits中返回
+/data/yht/code/sood-mcl/semi_mmrotate/models/detectors/semi_rotated_baseline_fcos.py -> forward_train() 这里其实无需修改, 数据流包含在logits中返回
 /data/yht/code/sood-mcl/semi_mmrotate/models/dense_heads/semi_rotated_baseline_fcos_head.py -> forward_train(), 额外返回cat_labels, pos_inds
 /data/yht/code/sood-mcl/semi_mmrotate/models/dense_heads/semi_rotated_baseline_fcos_head.py -> loss(), 在返回loss字典那里额外返回flatten_labels, pos_inds
 (3) 添加prototype类
@@ -42,3 +51,17 @@ run /data/yht/code/sood-mcl/split_data_via_list.py
 ...未完待续(目前的问题, 只更新prototype不用prototype去微调特征图也会存在性能降低的bug)
 
 
+# 如何在推理时返回特征图
+(1) 修改模型文件, 使其支持额外返回特征图
+/data/yht/code/sood-mcl/semi_mmrotate/models/detectors/semi_rotated_baseline_fcos.py 重写 self.simple_test() 使其支持额外返回特征图
+/data/yht/code/sood-mcl/semi_mmrotate/models/dense_heads/semi_rotated_baseline_fcos_head.py -> self.get_bboxes() 使其支持额外回传 cls_scores, centernesses
+(2) 修改测试文件, 使其支持额外返回特征图
+/data/yht/code/sood-mcl/test.py -> main() 添加 --get-feature-map参数, 以及其他修改
+/data/yht/code/sood-mcl/test.py -> 添加single_gpu_test() 重写 mmdet.apis.single_gpu_test
+/data/yht/code/sood-mcl/test.py -> 添加vis_feature_map() 用于可视化特征图并保存
+
+
+# 如何再推理时返回nms前的box
+(1) 修改模型文件, 使其支持额外返回dense box
+/data/yht/code/sood-mcl/semi_mmrotate/models/dense_heads/semi_rotated_baseline_fcos_head.py -> self._get_bboxes_single() 额外返回 mlvl_bboxes, mlvl_scores, mlvl_centerness
+/data/yht/code/sood-mcl/semi_mmrotate/models/dense_heads/semi_rotated_baseline_fcos_head.py -> self.get_bboxes() 无需修改, 额外返回的数据包含在result_list中

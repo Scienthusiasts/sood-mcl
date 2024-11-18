@@ -51,7 +51,13 @@ cd /data/yht/code/sood-mcl
 #     --work-dir log/dtbaseline/DOTA1.0/debug
 
 # 10per_dtbaseline_train DOTA1.0
+# /home/kpn/anaconda3/envs/sood-mcl/bin/python -m torch.distributed.launch --node_rank=0 --master_addr="127.0.0.1" --nproc_per_node=2 --nnodes=1 --master_port=29560\
+#     train.py configs_dota15/denseteacher_baseline/denseteacher_fcos_dota10_10p.py \
+#     --launcher pytorch \
+#     --work-dir log/dtbaseline/DOTA1.0/10per_prototype/only-update
+
+# full_dtbaseline_train DOTA1.0
 /home/kpn/anaconda3/envs/sood-mcl/bin/python -m torch.distributed.launch --node_rank=0 --master_addr="127.0.0.1" --nproc_per_node=2 --nnodes=1 --master_port=29560\
-    train.py configs_dota15/denseteacher_baseline/denseteacher_fcos_dota10_10p.py \
+    train.py configs_dota15/denseteacher_baseline/denseteacher_fcos_dota10_full.py \
     --launcher pytorch \
-    --work-dir log/dtbaseline/DOTA1.0/10per_global-w/cat-score
+    --work-dir log/dtbaseline/DOTA1.0/full

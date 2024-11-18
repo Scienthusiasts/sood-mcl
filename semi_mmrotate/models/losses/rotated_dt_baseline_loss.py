@@ -121,9 +121,10 @@ class RotatedDTBLLoss(nn.Module):
             # 设置所有样本都为正样本, 均参与计算损失
             mask = torch.ones_like(t_scores, dtype=torch.bool)
             # weight_mask基于分类置信度, 可以再试一下联合置信度
-            weight_mask = t_scores
-            # weight_mask = t_joint_scores
+            # weight_mask = t_scores
+            weight_mask = t_joint_scores.pow(beta)
             fg_num = weight_mask.sum()
+
 
         # 获得正负样本mask
         pos_mask = mask > 0.

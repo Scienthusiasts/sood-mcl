@@ -7,7 +7,9 @@ import numpy as np
 from .rotated_semi_detector import RotatedSemiDetector
 from mmrotate.models.builder import ROTATED_DETECTORS
 from mmrotate.models import build_detector
-# yan prototype实例
+# yan 
+from mmrotate.core import rbbox2result
+# prototype实例
 from .prototype.prototype import FCOSPrototype
 
 

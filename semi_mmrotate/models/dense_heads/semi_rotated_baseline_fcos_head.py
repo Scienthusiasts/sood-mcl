@@ -537,6 +537,7 @@ class SemiRotatedBLFCOSHead(RotatedAnchorFreeHead):
                    angle_preds,
                    centernesses,
                    img_metas,
+                   get_feature_map=False,
                    cfg=None,
                    rescale=None):
         """Transform network output for a batch into bbox predictions.
@@ -572,7 +573,8 @@ class SemiRotatedBLFCOSHead(RotatedAnchorFreeHead):
         mlvl_points = self.prior_generator.grid_priors(featmap_sizes,
                                                        bbox_preds[0].dtype,
                                                        bbox_preds[0].device)
-        result_list = []
+        # added by yan
+        result_list, dense_bboxes_list, dense_scores_list, dense_cnt_list = [], [], [], []
         for img_id in range(len(img_metas)):
             cls_score_list = [
                 cls_scores[i][img_id].detach() for i in range(num_levels)
@@ -588,14 +590,24 @@ class SemiRotatedBLFCOSHead(RotatedAnchorFreeHead):
             ]
             img_shape = img_metas[img_id]['img_shape']
             scale_factor = img_metas[img_id]['scale_factor']
-            det_bboxes = self._get_bboxes_single(cls_score_list,
-                                                 bbox_pred_list,
-                                                 angle_pred_list,
-                                                 centerness_pred_list,
-                                                 mlvl_points, img_shape,
-                                                 scale_factor, cfg, rescale)
-            result_list.append(det_bboxes)
-        return result_list
+            # NOTE: yan, det_bboxes里还额外返回了mlvl_bboxes, mlvl_scores, mlvl_centerness
+            det_bboxes, det_labels, mlvl_bboxes, mlvl_scores, mlvl_centerness = self._get_bboxes_single(cls_score_list,
+                                                                                                        bbox_pred_list,
+                                                                                                        angle_pred_list,
+                                                                                                        centerness_pred_list,
+                                                                                                        mlvl_points, img_shape,
+                                                                                                        scale_factor, cfg, rescale)
+            result_list.append([det_bboxes, det_labels])
+            dense_bboxes_list.append(mlvl_bboxes)
+            dense_scores_list.append(mlvl_scores)
+            dense_cnt_list.append(mlvl_centerness)
+        # NOTE: added by yan
+        # 当get_feature_map=True, 为了可视化特征图, 额外回传 cls_scores, centernesses
+        # 为了可视化nms之间的box, 额外回传dense_bboxes_list, dense_scores_list, dense_cnt_list,
+        if get_feature_map:
+            return result_list, dense_bboxes_list, dense_scores_list, dense_cnt_list, cls_scores, centernesses
+        else:
+            return result_list
 
     def _get_bboxes_single(self,
                            cls_scores,
@@ -649,6 +661,7 @@ class SemiRotatedBLFCOSHead(RotatedAnchorFreeHead):
             bbox_pred = bbox_pred.permute(1, 2, 0).reshape(-1, 4)
             angle_pred = angle_pred.permute(1, 2, 0).reshape(-1, 1)
             bbox_pred = torch.cat([bbox_pred, angle_pred], dim=1)
+            # nms_pre=2000, 即一个尺度上的预测框最多不超过2000, 因此首先过滤掉那些score很低的框
             nms_pre = cfg.get('nms_pre', -1)
             if nms_pre > 0 and scores.shape[0] > nms_pre:
                 max_scores, _ = (scores * centerness[:, None]).max(dim=1)
@@ -679,7 +692,9 @@ class SemiRotatedBLFCOSHead(RotatedAnchorFreeHead):
             cfg.nms,
             cfg.max_per_img,
             score_factors=mlvl_centerness)
-        return det_bboxes, det_labels
+        # 额外返回 mlvl_bboxes, mlvl_scores, mlvl_centerness
+        return det_bboxes, det_labels, mlvl_bboxes, mlvl_scores, mlvl_centerness
+
 
     @force_fp32(
         apply_to=('cls_scores', 'bbox_preds', 'angle_preds', 'centerness'))

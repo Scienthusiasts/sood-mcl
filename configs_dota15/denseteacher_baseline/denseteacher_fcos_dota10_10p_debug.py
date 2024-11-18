@@ -33,7 +33,7 @@ load_from = '/data/yht/code/sood-mcl/log/dtbaseline/DOTA1.0/10per/iter_120000.pt
 angle_version = 'le90'
 # model settings
 detector = dict(
-    type='SemiRotatedFCOS',
+    type='SemiRotatedBLFCOS',
     backbone=dict(
         type='ResNet',
         depth=50,
