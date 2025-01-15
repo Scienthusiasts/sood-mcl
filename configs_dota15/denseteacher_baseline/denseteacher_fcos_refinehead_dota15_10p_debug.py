@@ -13,6 +13,13 @@ train_unsup_label_dir = f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train
 val_image_dir =         f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/val/images'
 val_label_dir =         f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/val/{version}/annfiles'
 test_image_dir =        f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/test/images'
+
+
+# full:
+# train_sup_image_dir =   f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train/images/'
+# train_sup_label_dir =   f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train/{version}/annfiles/'
+
+
 # 类别数
 nc = 16
 # 伪标签筛选超参
@@ -26,13 +33,17 @@ semi_loss = dict(type='RotatedDTBLLoss', cls_channels=nc, loss_type='origin', bb
 prototype = dict(cat_nums=nc, mode='ema', loss_weight = 1.)
 # 无监督分支权重
 unsup_loss_weight = 1.0
-# burn_in_steps
-burn_in_steps = 12800
+# just for debug:
+burn_in_steps = 64
+
+# load_from = 'log/dtbaseline/DOTA1.5/10per_global-w_denoise/only-update-refinehead/joint-score-beta-2.0_burn-in-12800_frcnn-head_detach/iter_38400.pth'
+load_from = 'log/dtbaseline/DOTA1.5/10per_global-w_denoise/only-update-refinehead/joint-score-beta-2.0_burn-in-12800_frcnn-head_RotatedIoULoss_detach/latest.pth'
+# load_from = None
 
 angle_version = 'le90'
 # model settings
 detector = dict(
-    type='SemiRotatedBLFCOS',
+    type='SemiRotatedBLRefineFCOS',
     backbone=dict(
         type='ResNet',
         depth=50,
@@ -76,14 +87,95 @@ detector = dict(
         loss_bbox=dict(type='RotatedIoULoss', loss_weight=1.0),
         loss_centerness=dict(
             type='CrossEntropyLoss', use_sigmoid=True, loss_weight=1.0)),
+    # 这部分充当去噪微调模块:
+    # (roi_head, train_cfg, test_cfg): reference: /data/yht/code/sood-mcl/configs_dota15/unbaisedteacher/unbaisedteacher_faster-rcnn_dota15_30p.py
+    roi_head=dict(
+        type='RotatedFRCNNRoIHead',
+        version=angle_version,
+        bbox_roi_extractor=dict(
+            type='SingleRoIExtractor',
+            roi_layer=dict(type='RoIAlign', output_size=7, sampling_ratio=0),
+            out_channels=256,
+            featmap_strides=[8, 16, 32, 64, 128]),
+        bbox_head=dict(
+            type='RotatedShared2FCBBoxHead',
+            in_channels=256,
+            fc_out_channels=1024,
+            roi_feat_size=7,
+            num_classes=nc,
+            bbox_coder=dict(
+                type='DeltaXYWHAHBBoxCoder',
+                angle_range=angle_version,
+                norm_factor=2,
+                edge_swap=True,
+                target_means=(.0, .0, .0, .0, .0),
+                target_stds=(0.1, 0.1, 0.2, 0.2, 0.1)),
+            reg_class_agnostic=True,
+            loss_cls=dict(
+                type='CrossEntropyLoss', use_sigmoid=False, loss_weight=1.0),
+            # loss_bbox=dict(type='RotatedIoULoss', loss_weight=1.0)
+            loss_bbox=dict(type='SmoothL1Loss', beta=1.0, loss_weight=1.0)
+        )),
     # training and testing settings
-    train_cfg=None,
+    train_cfg=dict(
+        rpn=dict(
+            assigner=dict(
+                type='MaxIoUAssigner',
+                pos_iou_thr=0.7,
+                neg_iou_thr=0.3,
+                min_pos_iou=0.3,
+                match_low_quality=True,
+                ignore_iof_thr=-1),
+            sampler=dict(
+                type='RandomSampler',
+                num=256,
+                pos_fraction=0.5,
+                neg_pos_ub=-1,
+                add_gt_as_proposals=False),
+            allowed_border=0,
+            pos_weight=-1,
+            debug=False),
+        rpn_proposal=dict(
+            nms_pre=2000,
+            max_per_img=2000,
+            nms=dict(type='nms', iou_threshold=0.7),
+            min_bbox_size=0),
+        rcnn=dict(
+            assigner=dict(
+                type='MaxIoUAssigner',
+                pos_iou_thr=0.5,
+                neg_iou_thr=0.5,
+                min_pos_iou=0.5,
+                match_low_quality=False,
+                ignore_iof_thr=-1),
+            sampler=dict(
+                type='RandomSampler',
+                num=512,
+                pos_fraction=0.25,
+                neg_pos_ub=-1,
+                add_gt_as_proposals=True),
+            pos_weight=-1,
+            debug=False)),
     test_cfg=dict(
+        rpn=dict(
+            nms_pre=2000,
+            max_per_img=2000,
+            nms=dict(type='nms', iou_threshold=0.7),
+            min_bbox_size=0),
+        rcnn=dict(
+            nms_pre=2000,
+            min_bbox_size=0,
+            score_thr=0.05,
+            nms=dict(iou_thr=0.1),
+            max_per_img=2000),
+        # 原本就有的:
         nms_pre=2000,
         min_bbox_size=0,
         score_thr=0.05,
         nms=dict(iou_thr=0.1),
-        max_per_img=2000))
+        max_per_img=2000,
+    )
+)
 
 model = dict(
     type="RotatedDTBaseline",
@@ -275,7 +367,6 @@ log_config = dict(
 
 dist_params = dict(backend='nccl')
 log_level = 'INFO'
-load_from = None
 resume_from = None
 workflow = [('train', 1)]   # mode, iters
 

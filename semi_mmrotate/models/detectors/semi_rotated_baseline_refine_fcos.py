@@ -7,10 +7,11 @@ from mmrotate.models import RotatedFCOS, ROTATED_DETECTORS, RotatedSingleStageDe
 from mmrotate.core import rbbox2result
 import mmcv
 import numpy as np
-
+# yan
+from mmrotate.models.builder import ROTATED_DETECTORS, build_backbone, build_head, build_neck
 
 @ROTATED_DETECTORS.register_module()
-class SemiRotatedBLFCOS(RotatedFCOS):
+class SemiRotatedBLRefineFCOS(RotatedFCOS):
     """Implementation of Rotated `FCOS.`__
 
     __ https://arxiv.org/abs/1904.01355
@@ -20,6 +21,8 @@ class SemiRotatedBLFCOS(RotatedFCOS):
                  backbone,
                  neck,
                  bbox_head,
+                 # 去噪微调模块
+                 roi_head, 
                  train_cfg=None,
                  test_cfg=None,
                  pretrained=None,
@@ -29,7 +32,23 @@ class SemiRotatedBLFCOS(RotatedFCOS):
         super(RotatedFCOS, self).__init__(backbone, neck, bbox_head, train_cfg,
                                           test_cfg, pretrained, init_cfg)
         self.get_feature_map = get_feature_map
-        
+
+        '''去噪微调模块就是roi head'''
+        # reference: /data/yht/code/sood-mcl/mmrotate-0.3.4/mmrotate/models/detectors/two_stage.py
+        if roi_head is not None:
+            # update train and test cfg here for now
+            # TODO: refactor assigner & sampler
+            rcnn_train_cfg = train_cfg.rcnn if train_cfg is not None else None
+            roi_head.update(train_cfg=rcnn_train_cfg)
+            roi_head.update(test_cfg=test_cfg.rcnn)
+            roi_head.pretrained = pretrained
+            self.roi_head = build_head(roi_head)
+        self.train_cfg = train_cfg
+        self.test_cfg = test_cfg
+
+        # for param in self.roi_head.parameters():
+        #     param.requires_grad = False
+            
     def forward_train(self,
                       img,
                       img_metas,

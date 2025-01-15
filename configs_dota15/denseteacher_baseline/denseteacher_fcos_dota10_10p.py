@@ -17,11 +17,13 @@ test_image_dir =        f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/test/
 nc = 15
 # 伪标签筛选超参
 semi_loss = dict(type='RotatedDTBLLoss', cls_channels=nc, loss_type='origin', bbox_loss_type='l1', 
-                 # 'topk', 'top_dps', 'catwise_top_dps', 'global_w'
+                 # 'topk', 'top_dps', 'catwise_top_dps', 'global_w', 'sla'
                  p_selection = dict(mode='topk', k=0.01, beta=1.0),
+                 # 蒸馏超参数  'kld', 'l2', 'qflv2', 'cosine'
+                 distill = dict(mode='cosine', beta=1.0, loss_weight=1.0),
                  )
 # prototype原型
-prototype = dict(cat_nums=nc, mode='contrast')
+prototype = dict(cat_nums=nc, mode='contrast', loss_weight = 1.)
 # 无监督分支权重
 unsup_loss_weight = 1.0
 

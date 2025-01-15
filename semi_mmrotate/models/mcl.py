@@ -7,7 +7,7 @@ from mmrotate.models import build_detector
 
 @ROTATED_DETECTORS.register_module()
 class MCLTeacher(RotatedSemiDetector):
-    def __init__(self, model: dict, semi_loss, train_cfg=None, test_cfg=None):
+    def __init__(self, model: dict, semi_loss, train_cfg=None, test_cfg=None, pretrained=None):
         super(MCLTeacher, self).__init__(
             dict(teacher=build_detector(model), student=build_detector(model)),
             semi_loss,

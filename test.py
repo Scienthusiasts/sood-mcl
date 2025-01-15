@@ -19,9 +19,10 @@ from mmrotate.datasets import build_dataset
 from mmrotate.models import build_detector
 from mmrotate.utils import compat_cfg, setup_multi_processes
 # yan:
+from semi_mmrotate.models.rotated_dt_baseline import RotatedDTBaseline
+from semi_mmrotate.models.mcl import MCLTeacher
 from mmcv.image import tensor2imgs
 from mmdet.core import encode_mask_results
-from semi_mmrotate.models.rotated_dt_baseline import RotatedDTBaseline
 import matplotlib.pyplot as plt
 import numpy as np
 import torch.nn.functional as F
@@ -33,8 +34,8 @@ def parse_args():
     """Parse parameters."""
     parser = argparse.ArgumentParser(
         description='MMDet test (and eval) a model')
-    parser.add_argument('config', help='test config file path')
-    parser.add_argument('checkpoint', help='checkpoint file')
+    parser.add_argument('--config', help='test config file path')
+    parser.add_argument('--checkpoint', help='checkpoint file')
     parser.add_argument(
         '--work-dir',
         help='the directory to save the file containing evaluation metrics')
@@ -103,8 +104,7 @@ def parse_args():
     # NOTE: added by yan
     parser.add_argument(
         '--get-feature-map',
-        type=bool,
-        default=False,
+        action='store_true',
         help='whether to return cls_score and centerness feature map.')
     
     args = parser.parse_args()
@@ -142,7 +142,7 @@ def main():
     if cfg.get('cudnn_benchmark', False):
         torch.backends.cudnn.benchmark = True
 
-    cfg.model.pretrained = None
+    # cfg.model.pretrained = None
     if cfg.model.get('neck'):
         if isinstance(cfg.model.neck, list):
             for neck_cfg in cfg.model.neck:
@@ -220,7 +220,8 @@ def main():
     # build the model and load checkpoint
     cfg.model.train_cfg = None
     # NOTE: added by yan
-    cfg.model['model']['get_feature_map'] = args.get_feature_map
+    if args.get_feature_map==True:
+        cfg.model['model']['get_feature_map'] = args.get_feature_map
     model = build_detector(cfg.model, test_cfg=cfg.get('test_cfg'))
     fp16_cfg = cfg.get('fp16', None)
     if fp16_cfg is not None:
@@ -297,9 +298,9 @@ def single_gpu_test(model,
             if get_feature_map:
                 result, dense_bboxes, dense_scores, dense_cnt, cls_scores, centernesses = model(return_loss=False, rescale=True, **data)
                 # 处理并可视化热力图
-                # vis_feature_map(cls_scores, centernesses, data['img'][0].data[0], data['img_metas'][0].data[0][0]['ori_filename'])
+                vis_feature_map(cls_scores, centernesses, data['img'][0].data[0], data['img_metas'][0].data[0][0]['ori_filename'])
                 # 处理并可视化dense boxes
-                vis_dense_bboxes(dense_bboxes, dense_scores, dense_cnt, data['img'][0].data[0], data['img_metas'][0].data[0][0]['ori_filename'])
+                # vis_dense_bboxes(dense_bboxes, dense_scores, dense_cnt, data['img'][0].data[0], data['img_metas'][0].data[0][0]['ori_filename'])
             else:
                 result = model(return_loss=False, rescale=True, **data)
         batch_size = len(result)
@@ -407,7 +408,7 @@ def vis_feature_map(cls_scores, centernesses, raw_img, img_name):
     if not os.path.isdir('./vis_same-size/npfile/joint_score'):os.makedirs('./vis_same-size/npfile/joint_score')
     # 保存可视化结果
     plt.subplots_adjust(left=0.01, bottom=0.01, right=0.99, top=0.99, wspace=0.01, hspace=0.01)
-    plt.savefig(f'./vis_same-size/fig/{img_name}', dpi=200)  
+    plt.savefig(f'./vis_same-size/{img_name}', dpi=200)  
     # 保存二进制np文件
     # for i in range(5):
     #     np.save(f'./vis_same-size/npfile/cls_score/{img_name}_lvl{i}.npy', cls_score_list[i])

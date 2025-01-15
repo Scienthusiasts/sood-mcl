@@ -3,3 +3,4 @@ vis_same-size/
 __pycache__
 *.pt
 terminal_log.log
+vis_prototype*/

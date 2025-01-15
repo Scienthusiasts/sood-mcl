@@ -2,10 +2,9 @@ import torchvision.transforms as transforms
 from copy import deepcopy
 
 
-
-# DOTA数据集版本(1.0 or 1.5)
-version = 1.5
-# 数据集路径
+angle_version = 'le90'
+version = 1.0
+# 数据集路径:
 train_sup_image_dir =   f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train_10per/{version}/labeled/images/'
 train_sup_label_dir =   f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train_10per/{version}/labeled/annfiles/'
 train_unsup_image_dir = f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train_10per/{version}/unlabeled/images/'
@@ -14,25 +13,21 @@ val_image_dir =         f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/val/i
 val_label_dir =         f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/val/{version}/annfiles'
 test_image_dir =        f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/test/images'
 # 类别数
-nc = 16
-# 伪标签筛选超参
-semi_loss = dict(type='RotatedDTBLLoss', cls_channels=nc, loss_type='origin', bbox_loss_type='l1', 
-                 # 'topk', 'top_dps', 'catwise_top_dps', 'global_w', 'sla'
-                 p_selection = dict(mode='global_w', k=0.01, beta=2.0),
-                 # 蒸馏超参数  'kld', 'l2', 'qflv2'
-                 distill = dict(mode='l2', beta=1.0, loss_weight=1.0),
-                 )
-# prototype原型
-prototype = dict(cat_nums=nc, mode='ema', loss_weight = 1.)
+nc = 15
+# 伪框筛选前1%
+topk = 0.01
 # 无监督分支权重
 unsup_loss_weight = 1.0
-# burn_in_steps
-burn_in_steps = 12800
+# just for debug:
+burn_in_steps = 64
+load_from = '/data/yht/code/sood-mcl/log/dtbaseline/DOTA1.0/10per_topk/k-1.0/iter_120000.pth'
 
-angle_version = 'le90'
+
+
+
 # model settings
 detector = dict(
-    type='SemiRotatedBLFCOS',
+    type='SemiRotatedFCOS',
     backbone=dict(
         type='ResNet',
         depth=50,
@@ -53,7 +48,7 @@ detector = dict(
         num_outs=5,
         relu_before_extra_convs=True),
     bbox_head=dict(
-        type='SemiRotatedBLFCOSHead',
+        type='SemiRotatedFCOSHead',
         num_classes=nc,
         in_channels=256,
         stacked_convs=4,
@@ -86,11 +81,9 @@ detector = dict(
         max_per_img=2000))
 
 model = dict(
-    type="RotatedDTBaseline",
+    type="RotatedDenseTeacher",
     model=detector,
-    # newly added
-    prototype=prototype,
-    semi_loss=semi_loss,
+    semi_loss=dict(type='RotatedDTLoss', cls_channels=nc, loss_type='origin', bbox_loss_type='iou'),
     train_cfg=dict(
         iter_count=0,
         burn_in_steps=burn_in_steps,
@@ -98,6 +91,7 @@ model = dict(
         unsup_weight=unsup_loss_weight,
         weight_suppress="linear",
         logit_specific_weights=dict(),
+        region_ratio=topk
     ),
     test_cfg=dict(inference_on="teacher"),
 )
@@ -182,8 +176,7 @@ dataset_type = 'DOTADataset'
 classes = ('plane', 'baseball-diamond', 'bridge', 'ground-track-field',
            'small-vehicle', 'large-vehicle', 'ship', 'tennis-court',
            'basketball-court', 'storage-tank', 'soccer-ball-field',
-           'roundabout', 'harbor', 'swimming-pool', 'helicopter',
-           'container-crane')
+           'roundabout', 'harbor', 'swimming-pool', 'helicopter')
 data = dict(
     samples_per_gpu=3,
     workers_per_gpu=5,
@@ -275,7 +268,6 @@ log_config = dict(
 
 dist_params = dict(backend='nccl')
 log_level = 'INFO'
-load_from = None
 resume_from = None
 workflow = [('train', 1)]   # mode, iters
 

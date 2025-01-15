@@ -266,3 +266,14 @@ workflow = [('train', 1)]   # mode, iters
 opencv_num_threads = 0
 # set multi-process start method as `fork` to speed up the training
 mp_start_method = 'fork'
+
+
+
+
+
+
+test_evaluator = dict(
+    type='DOTAMetric',
+    format_only=True,
+    merge_patches=True,
+    outfile_prefix='./Task1')

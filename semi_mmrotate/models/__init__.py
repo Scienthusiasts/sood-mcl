@@ -10,4 +10,5 @@ from .rotated_unbaised_teacher import RotatedUnbaisedTeacher
 from .rotated_arsl import RotatedARSL
 from .rotated_pseco import RotatedPseCo
 # yan
+from .roi_heads import *
 from .rotated_dt_baseline import RotatedDTBaseline

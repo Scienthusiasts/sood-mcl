@@ -11,6 +11,9 @@ from mmrotate.core import build_bbox_coder, multiclass_nms_rotated
 from mmrotate.models.builder import ROTATED_HEADS, build_loss
 from mmrotate.models.dense_heads.rotated_anchor_free_head import RotatedAnchorFreeHead
 
+import matplotlib.pyplot as plt
+import os
+import numpy as np
 
 INF = 1e8
 
@@ -160,8 +163,8 @@ class SemiRotatedBLFCOSHead(RotatedAnchorFreeHead):
             return self(x)
         
         # get_data=False时, 返回的是 loss 字典 (全监督分支get_data=False)
-        # NOTE: added by yan, 额外返回类别GT, 正样本索引, 计算prototype会用到
-        loss_dict, cat_labels, pos_inds = super(SemiRotatedBLFCOSHead, self).forward_train(
+        # NOTE: added by yan, 额外返回flatten_labels(类别GT, 正样本索引), 计算prototype会用到
+        loss_dict, flatten_labels, flatten_centerness, flatten_cls_scores, flatten_bbox_preds, flatten_angle_preds = super(SemiRotatedBLFCOSHead, self).forward_train(
             x,
             img_metas,
             gt_bboxes,
@@ -170,7 +173,7 @@ class SemiRotatedBLFCOSHead(RotatedAnchorFreeHead):
             proposal_cfg=proposal_cfg,
             **kwargs
         )
-        return loss_dict, cat_labels, pos_inds
+        return loss_dict, flatten_labels, flatten_centerness, flatten_cls_scores, flatten_bbox_preds, flatten_angle_preds
     
 
     def forward(self, feats):
@@ -232,14 +235,15 @@ class SemiRotatedBLFCOSHead(RotatedAnchorFreeHead):
 
     @force_fp32(apply_to=('cls_scores', 'bbox_preds', 'angle_preds', 'centernesses'))
     def loss(self,
-             cls_scores,
-             bbox_preds,
-             angle_preds,
-             centernesses,
-             gt_bboxes,
-             gt_labels,
+             cls_scores,        # [[bs, cls_num, h1, w1], ..., [bs, cls_num, h5, w5]]
+             bbox_preds,        # [[bs, 4, h1, w1], ..., [bs, 4, h5, w5]]
+             angle_preds,       # [[bs, 1, h1, w1], ..., [bs, 1, h5, w5]]
+             centernesses,      # [[bs, 1, h1, w1], ..., [bs, 1, h5, w5]]
+             gt_bboxes,         # [[gt_num_1, 5], ..., [gt_num_bs, 5]]
+             gt_labels,         # [[gt_num_1], ..., [gt_num_bs]]
              img_metas,
              gt_bboxes_ignore=None):
+        # print(cls_scores[0].shape, bbox_preds[0].shape, angle_preds[0].shape, centernesses[0].shape, gt_bboxes[0].shape, gt_labels[0].shape)
         """Compute loss of the head.
         Args:
             cls_scores (list[Tensor]): Box scores for each scale level,
@@ -352,18 +356,19 @@ class SemiRotatedBLFCOSHead(RotatedAnchorFreeHead):
                 loss_angle = pos_angle_preds.sum()
         
         # loss以字典形式返回 
-        # NOTE: added by yan, 返回flatten_labels, flatten_cls_scores, pos_inds, 计算prototype会用到
+        # NOTE: added by yan, 返回flatten_labels, 计算prototype会用到
         if self.separate_angle:
             return dict(
                 loss_cls=loss_cls,
                 loss_bbox=loss_bbox,
                 loss_angle=loss_angle,
-                loss_centerness=loss_centerness), flatten_labels, pos_inds
+                loss_centerness=loss_centerness), flatten_labels, flatten_centerness, flatten_cls_scores, flatten_bbox_preds, flatten_angle_preds
         else:
             return dict(
                 loss_cls=loss_cls,
                 loss_bbox=loss_bbox,
-                loss_centerness=loss_centerness), flatten_labels, pos_inds
+                loss_centerness=loss_centerness), flatten_labels, flatten_centerness, flatten_cls_scores, flatten_bbox_preds, flatten_angle_preds
+
 
     def get_targets(self, points, gt_bboxes_list, gt_labels_list):
         """Compute regression, classification and centerness targets for points
@@ -670,6 +675,7 @@ class SemiRotatedBLFCOSHead(RotatedAnchorFreeHead):
                 bbox_pred = bbox_pred[topk_inds, :]
                 scores = scores[topk_inds, :]
                 centerness = centerness[topk_inds]
+
             bboxes = self.bbox_coder.decode(
                 points, bbox_pred, max_shape=img_shape)
             mlvl_bboxes.append(bboxes)
@@ -685,13 +691,18 @@ class SemiRotatedBLFCOSHead(RotatedAnchorFreeHead):
         # BG cat_id: num_class
         mlvl_scores = torch.cat([mlvl_scores, padding], dim=1)
         mlvl_centerness = torch.cat(mlvl_centerness)
+
+
+        # det_bboxes.shape=[nms_num, 6]   det_labels.shape=[nms_num]
         det_bboxes, det_labels = multiclass_nms_rotated(
-            mlvl_bboxes,
-            mlvl_scores,
-            cfg.score_thr,
-            cfg.nms,
-            cfg.max_per_img,
-            score_factors=mlvl_centerness)
+            mlvl_bboxes,                  # [total_box_num, 5]
+            mlvl_scores,                  # [total_box_num, 16]
+            cfg.score_thr,                # 0.05
+            cfg.nms,                      # {'iou_thr': 0.1}
+            cfg.max_per_img,              # 2000
+            score_factors=mlvl_centerness # [total_box_num]
+            )
+
         # 额外返回 mlvl_bboxes, mlvl_scores, mlvl_centerness
         return det_bboxes, det_labels, mlvl_bboxes, mlvl_scores, mlvl_centerness
 

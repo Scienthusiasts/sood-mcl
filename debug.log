@@ -1,13 +1,41 @@
 # 推理整个验证集并可视化:
+# dt_baseline
 python test.py \
-configs_dota15/denseteacher_baseline/denseteacher_fcos_dota10_10p.py \
-log/dtbaseline/DOTA1.0/10per_topk/k-1.0/latest.pth \
---work-dir log/dtbaseline/DOTA1.0/10per/eval_result \
---gpu-ids 1 \
+--config configs_dota15/denseteacher_baseline/denseteacher_fcos_dota10_10p.py \
+--checkpoint log/dtbaseline/DOTA1.5/10per_global-w_prototype-only-update/w1.0-bgd-truenormema-w-unsup_joint-score-beta-2.0_burn-in-12800/latest.pth \
+--work-dir log/dtbaseline/DOTA1.0/10per_prototype/only-update_wo-random-init/eval_result \
+--gpu-ids 7 \
 --eval mAP \
---out log/dtbaseline/DOTA1.0/10per/eval_result/eval.pkl \
---get-feature-map True \
+--out log/dtbaseline/DOTA1.0/10per_prototype/only-update_wo-random-init/eval_result/eval.pkl \
+--get-feature-map \
+--cfg-options cfg.model.pretrained=None \
 --show-dir log/dtbaseline/DOTA1.0/10per/eval_result/vis_result 
+
+# mcl
+python test.py \
+--config configs_dota15/mcl/mcl_fcos_dota15_10p_big_img.py \
+--checkpoint log/mcl/DOTA1.5/10per/latest.pth \
+--work-dir log/mcl/DOTA1.5/10per/eval_result \
+--gpu-ids 7 \
+--eval mAP \
+--out log/mcl/DOTA1.5/10per/eval_result/eval.pkl \
+--show-dir log/dtbaseline/DOTA1.0/10per/eval_result/vis_result \
+--cfg-options cfg.model.pretrained=None \
+--get-feature-map True \
+
+
+# 终端输出日志重定向:
+sh run.sh > log/dtbaseline/DOTA1.5/10per_denoise/global-w/joint-score-beta-2.0_burn-in-12800_orcnn-head_all-refine-loss_box-O2M-loss_detach_GA_2/terminal_log.log 2>&1
+
+
+
+
+
+
+
+
+
+
 
 
 # 如何生成partial labeled 数据集
@@ -41,8 +69,8 @@ run /data/yht/code/sood-mcl/split_data_via_list.py
 (2) 返回全特征图的的类别GT, 和正样本索引
 /data/yht/code/sood-mcl/semi_mmrotate/models/rotated_dt_baseline.py -> forward_train() 修改三个地方(teacher和student的forward_train())
 /data/yht/code/sood-mcl/semi_mmrotate/models/detectors/semi_rotated_baseline_fcos.py -> forward_train() 这里其实无需修改, 数据流包含在logits中返回
-/data/yht/code/sood-mcl/semi_mmrotate/models/dense_heads/semi_rotated_baseline_fcos_head.py -> forward_train(), 额外返回cat_labels, pos_inds
-/data/yht/code/sood-mcl/semi_mmrotate/models/dense_heads/semi_rotated_baseline_fcos_head.py -> loss(), 在返回loss字典那里额外返回flatten_labels, pos_inds
+/data/yht/code/sood-mcl/semi_mmrotate/models/dense_heads/semi_rotated_baseline_fcos_head.py -> forward_train(), 额外返回flatten_labels
+/data/yht/code/sood-mcl/semi_mmrotate/models/dense_heads/semi_rotated_baseline_fcos_head.py -> loss(), 在返回loss字典那里额外返回flatten_labels
 (3) 添加prototype类
 添加/data/yht/code/sood-mcl/semi_mmrotate/models/prototype/prototype.py 
 /data/yht/code/sood-mcl/semi_mmrotate/models/rotated_dt_baseline.py 导入: from .prototype.prototype import FCOSPrototype
@@ -51,7 +79,7 @@ run /data/yht/code/sood-mcl/split_data_via_list.py
 ...未完待续(目前的问题, 只更新prototype不用prototype去微调特征图也会存在性能降低的bug)
 
 
-# 如何在推理时返回特征图
+# 如何在推理时返回特征图(或其他要素)
 (1) 修改模型文件, 使其支持额外返回特征图
 /data/yht/code/sood-mcl/semi_mmrotate/models/detectors/semi_rotated_baseline_fcos.py 重写 self.simple_test() 使其支持额外返回特征图
 /data/yht/code/sood-mcl/semi_mmrotate/models/dense_heads/semi_rotated_baseline_fcos_head.py -> self.get_bboxes() 使其支持额外回传 cls_scores, centernesses
@@ -62,6 +90,321 @@ run /data/yht/code/sood-mcl/split_data_via_list.py
 
 
 # 如何再推理时返回nms前的box
-(1) 修改模型文件, 使其支持额外返回dense box
+(1) 修改模型文件, 使其支持额外返回dense bbox
 /data/yht/code/sood-mcl/semi_mmrotate/models/dense_heads/semi_rotated_baseline_fcos_head.py -> self._get_bboxes_single() 额外返回 mlvl_bboxes, mlvl_scores, mlvl_centerness
 /data/yht/code/sood-mcl/semi_mmrotate/models/dense_heads/semi_rotated_baseline_fcos_head.py -> self.get_bboxes() 无需修改, 额外返回的数据包含在result_list中
+(2) 修改测试文件, 使其支持额外返回dense bbox
+/data/yht/code/sood-mcl/test.py -> single_gpu_test() 添加vis_dense_bboxes
+/data/yht/code/sood-mcl/test.py -> 添加vis_dense_bboxes() 用于可视化dense bbox并保存
+
+
+# 如何对fpn_feat实现自蒸馏
+/data/yht/code/sood-mcl/semi_mmrotate/models/detectors/semi_rotated_baseline_fcos.py -> forward_train() 添加fpn_feat_grad字段, =True时保留返回FPN特征图的梯度
+/data/yht/code/sood-mcl/semi_mmrotate/models/rotated_dt_baseline.py -> forward_train() stu的forward_train()设置fpn_feat_grad=True
+/data/yht/code/sood-mcl/semi_mmrotate/models/losses/rotated_dt_baseline_loss.py -> forward()
+
+
+
+# 如何取消利用prototype进行refine
+/data/yht/code/sood-mcl/semi_mmrotate/models/rotated_dt_baseline.py -> forward_train() 注释 "替换teacher的score为refine的特征"下的代码
+/data/yht/code/sood-mcl/semi_mmrotate/models/losses/rotated_dt_baseline_loss.py 
+(1) forward() ->
+t_cls_scores, t_bbox_preds, t_centernesses, t_fpn_feat, bs = self.convert_shape(teacher_logits[:-1], wo_cls_score=True) 去掉 wo_cls_score=True;  teacher_logits[:-1] 换成 teacher_logits
+注释 refine_t_joint_score = teacher_logits[-1];   
+删去 self.pseudoLabelSelection() 的 refine_t_joint_score参数
+无监督分类损失部分 t_cls_scores 改成 t_cls_scores.sigmoid()
+(2) pseudoLabelSelection() ->
+删去 self.pseudoLabelSelection() 的 refine_t_joint_score参数
+teacher_probs = t_cls_scores 换成 teacher_probs = t_cls_scores.sigmoid()
+t_joint_scores = refine_t_joint_score.max(dim=1)[0] 换成 t_joint_scores = t_centernesses.sigmoid().reshape(-1) * t_scores
+
+
+# 如何只用prototype进行当做标签筛选的权重
+/data/yht/code/sood-mcl/semi_mmrotate/models/losses/rotated_dt_baseline_loss.py 
+(1) forward() ->
+添加  refine_t_joint_score = teacher_logits[-1];  
+self.convert_shape(teacher_logits) 换成 self.convert_shape(teacher_logits[:-1])
+添加 self.pseudoLabelSelection() 的 refine_t_joint_score参数
+(2) pseudoLabelSelection() ->
+添加 self.pseudoLabelSelection() 的 refine_t_joint_score参数
+t_joint_scores = t_centernesses.sigmoid().reshape(-1) * t_scores 换成 t_joint_scores = refine_t_joint_score.max(dim=1)[0]
+
+
+# 如何添加微调去噪模块(类似在一阶段上再加一个roihead变成二阶段)
+(1) config文件修改
+添加 /data/yht/code/sood-mcl/configs_dota15/denseteacher_baseline/denseteacher_fcos_refinehead_dota15_10p_debug.py
+detector type='SemiRotatedBLFCOS' => type='SemiRotatedBLRefineFCOS'
+在detector里添加roi_head=dict(...) ... (借鉴于 /data/yht/code/sood-mcl/configs_dota15/unbaisedteacher/unbaisedteacher_faster-rcnn_dota15_30p.py)
+(2) detector修改
+/data/yht/code/sood-mcl/semi_mmrotate/models/detectors/__init__.py 里添加 from .semi_rotated_baseline_refine_fcos import SemiRotatedBLRefineFCOS
+添加 /data/yht/code/sood-mcl/semi_mmrotate/models/detectors/semi_rotated_baseline_refine_fcos.py
+__init__() 修改两处
+(3) /data/yht/code/sood-mcl/semi_mmrotate/models/dense_heads/semi_rotated_baseline_fcos_head.py
+多回传 flatten_bbox_preds, flatten_angle_preds
+(4) 添加 /data/yht/code/sood-mcl/semi_mmrotate/models/roi_heads/rfrcnn_roi_head.py 并注册
+
+(5)目前的问题:
+在全监督部分需要获取bbox的回归结果(用于计算proposal_list), 
+因此还需要 /data/yht/code/sood-mcl/semi_mmrotate/models/dense_heads/semi_rotated_baseline_fcos_head.py 的loss函数返回 flatten_bbox_preds 和 flatten_angle_preds
+返回之后还要对回归结果进行解码得到真实图像尺度下的坐标框
+其他有待修改的地方具体可以参考 /data/yht/code/sood-mcl/mmrotate-0.3.4/mmrotate/models/detectors/two_stage.py
+
+# 如何将高斯椭圆标签分配方法添加到模型中
+(1) 添加 /data/yht/code/sood-mcl/semi_mmrotate/models/dense_heads/semi_rotated_baseline_fcos_ga_head.py -> SemiRotatedBLFCOSGAHead
+(2) 修改config配置文件
+
+
+# /data/yht/code/sood-mcl/semi_mmrotate/models/losses/rotated_dt_baseline_loss_old.py
+rotated_dt_baseline_loss_old.py依然保留所有25.01.01之前用到的各种实验过无效的策略(比如所有伪标签筛选策略, 多尺度特征蒸馏, 基于GCA加权global_w的损失等等), 方便之后可能再次使用
+rotated_dt_baseline_loss.py则删除了所有无效的策略
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# tmp:可视化bbox的不一致性:
+# 角度差异
+# t_angle_preds = t_bbox_preds[:, -1]
+# s_angle_preds = s_bbox_preds[:, -1]
+# feat_diff = torch.abs(t_angle_preds - s_angle_preds)
+# feat_diff = -torch.exp(-0.1 / feat_diff) + 1
+
+all_level_points = self.prior_generator.grid_priors(
+    [featmap.size()[-2:] for featmap in teacher_logits[0]],
+    dtype=s_bbox_preds.dtype,
+    device=s_bbox_preds.device)
+flatten_points = torch.cat([points.repeat(len(teacher_logits[0][0]), 1) for points in all_level_points])
+s_bbox_preds = self.bbox_coder.decode(flatten_points, s_bbox_preds)
+t_bbox_preds = self.bbox_coder.decode(flatten_points, t_bbox_preds)
+ts_iou = 1 - self.iou_loss(s_bbox_preds, t_bbox_preds)
+ts_iou = torch.clamp(ts_iou, 0, 1)
+# 可视化分析
+plt.scatter(weight_mask.detach().cpu().numpy(), ts_iou.detach().cpu().numpy(), s=1, c='b')
+plt.xlabel('joint score')
+plt.ylabel('t & s RIoU')
+plt.savefig('./ts-RIoU_joint-score_histmap.jpg', dpi=200)
+
+
+
+
+
+
+
+
+
+        '''test box微调centerness'''
+        sizes = [128, 64, 32, 16, 8]
+        all_level_points = self.prior_generator.grid_priors(
+            [featmap.size()[-2:] for featmap in teacher_logits[0]],
+            dtype=s_bbox_preds.dtype,
+            device=s_bbox_preds.device
+            )
+        flatten_points = torch.cat([points.repeat(len(teacher_logits[0][0]), 1) for points in all_level_points])
+        # 对预测的bbox解码得到最终的结果
+        t_bbox_preds = self.bbox_coder.decode(flatten_points, t_bbox_preds)
+
+        # 将box坐标与分类置信度concat [bs, total_anchor_num, 6=(cx, cy, w, h, θ, score)] (cx, cy是基于原图的尺寸)
+        t_preds = torch.cat([t_bbox_preds, torch.sigmoid(torch.max(t_cls_scores, 1)[0]).unsqueeze(1)], dim=1).reshape(bs, t_bbox_preds.shape[0]//bs, 6)
+        # [bs, total_anchor_num, 6] -> [[bs, h1*w1, 6], ..., [bs, h5*w5, 6]]
+        t_preds_list = torch.split(t_preds, [size * size for size in sizes], dim=1)
+        # 遍历所有尺度
+        for size_id, bs_lvl_t_preds in enumerate(t_preds_list):
+            # 上采样率
+            upsample_rate = 1024 // sizes[size_id]
+            # 遍历batch里的每张图像
+            for lvl_t_preds in bs_lvl_t_preds:
+                dense_y, dense_x = lvl_t_preds[:, 0].type(torch.int32), lvl_t_preds[:, 1].type(torch.int32)
+                dense_x = torch.clamp(dense_x, 0, 1024)
+                dense_y = torch.clamp(dense_y, 0, 1024)
+        
+                if size_id !=0: continue
+            
+                # 创建空白画布
+                fig = torch.zeros((sizes[size_id], sizes[size_id]), device=lvl_t_preds.device)
+                for x, y, score in zip(dense_x, dense_y, lvl_t_preds[:, -1]):
+                    fig[x//upsample_rate, y//upsample_rate] += score
+                # cls map
+                cat_score_map = lvl_t_preds[:, -1].reshape(sizes[size_id], sizes[size_id])
+                # 发现调整后并下采样的cls_mask居然和原始的cls_mask完全一致(说明每个grid微调的中心都不超过下采样率=8)
+                # print((fig - cat_score_map).sum())
+                '''可视化'''
+                plt.figure(figsize = (10, 5))
+                # 可视化原图
+                plt.subplot(1,2,1)
+                plt.imshow(fig.cpu().numpy())
+                plt.axis('off')
+                # # 可视化伪框中心点
+                # plt.subplot(1,2,2)
+                # plt.imshow(cat_score_map.cpu().numpy())
+                # plt.axis('off')
+                plt.subplots_adjust(left=0.01, bottom=0.01, right=0.99, top=0.99, wspace=0.01, hspace=0.01)
+                plt.savefig(f'./box_center.jpg', dpi=200)  
+
+
+
+
+
+'''测试cls_weighted_gaussian map的可视化会用到'''
+
+        plt.figure(figsize = (10, 6))
+        for lvl, lvl_soft_gaussian_center in enumerate(soft_gaussian_center):
+            lvl_soft_gaussian_center = lvl_soft_gaussian_center.reshape(sizes[lvl], sizes[lvl])
+            cat_score_map = t_joint_score[lvl].reshape(sizes[lvl], sizes[lvl])
+
+            '''可视化'''
+            # 可视化原图
+            plt.subplot(3,5,lvl+1)
+            plt.imshow(lvl_soft_gaussian_center.cpu().numpy(), vmin=0, vmax=1)
+            plt.axis('off')
+            # 可视化伪框中心点
+            plt.subplot(3,5,lvl+6)
+            plt.imshow(cat_score_map.cpu().numpy(), vmin=0, vmax=1)
+            plt.axis('off')
+
+        # 处理原图
+        std = np.array([58.395, 57.12 , 57.375]) / 255.
+        mean = np.array([123.675, 116.28 , 103.53]) / 255.
+        raw_img = self.img_metas['img'].squeeze(0).permute(1,2,0).cpu().numpy()
+        raw_img = np.clip(raw_img * std + mean, 0, 1)
+        # 可视化原图
+        plt.subplot(3,5,11)
+        plt.imshow(raw_img)
+        plt.axis('off')
+        plt.subplots_adjust(left=0.01, bottom=0.01, right=0.99, top=0.99, wspace=0.01, hspace=0.01)
+        plt.savefig(f"./vis_sgc/{self.img_metas['img_metas'][0]['ori_filename']}", dpi=200)  
+
+
+
+
+
+
+
+
+        '''/data/yht/code/sood-mcl/semi_mmrotate/models/losses/rotated_dt_baseline_loss.py decode_and_clustering()可视化部分'''
+        # 图像和图像名(默认batch=1)
+        img_name = [img_meta['ori_filename'] for img_meta in img_metas['img_metas']][0]
+        img = img_metas['img'].squeeze(0)
+        # 原图预处理
+        std = np.array([58.395, 57.12 , 57.375]) / 255.
+        mean = np.array([123.675, 116.28 , 103.53]) / 255.
+        img = img.permute(1,2,0).cpu().numpy()
+        img = np.clip(img * std + mean, 0, 1)
+        img = (img * 255.).astype(np.uint8)
+        img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+
+        poly_wbf_bboxes = obb2poly(wbf_bboxes)
+        poly_nms_bboxes = obb2poly(nms_bboxes)
+        # 可视化每个group里的框
+        for group_id in range(nms_bboxes.shape[0]):
+            # 随机颜色
+            color = np.random.randint(0, 256, size=3)
+            color = tuple([int(x) for x in color])
+            # img = OpenCVDrawBox(img, group_poly_boxes, group_bboxes[:, 6], group_bboxes[:, 5], color)
+            # 可视化WBF的框
+            img = OpenCVDrawBox(img, poly_wbf_bboxes[group_id].unsqueeze(0).cpu().numpy(), [0], [1], (0,255,0), 2)
+            # 可视化NMS的框
+            img = OpenCVDrawBox(img, poly_nms_bboxes[group_id].unsqueeze(0).cpu().numpy(), [0], [1], (0,0,255), 2)
+            
+
+        if not os.path.exists('./vis_res_wo_nms'):os.makedirs('./vis_res_wo_nms')
+        img_save_path = f"./vis_res_wo_nms/{img_name}"
+        cv2.imwrite(img_save_path, img)
+
+
+
+
+
+
+
+
+
+
+
+        '''/data/yht/code/sood-mcl/semi_mmrotate/models/rotated_dt_baseline.py 可视化GT与proposals'''
+        # 图像和图像名(默认batch=1)
+        img_names = [img_meta['ori_filename'] for img_meta in format_data['sup']['img_metas']]
+        images = format_data['sup']['img']
+        # 每张图片分别可视化
+        for batch in range(bs):
+            img_name = img_names[batch]
+            # 原图预处理
+            std = np.array([58.395, 57.12 , 57.375]) / 255.
+            mean = np.array([123.675, 116.28 , 103.53]) / 255.
+            img = images[batch].permute(1,2,0).cpu().numpy()
+            img = np.clip(img * std + mean, 0, 1)
+            img = (img * 255.).astype(np.uint8)
+            img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+            # 5参转8参
+            poly_rbb = obb2poly(proposal_list[batch])
+            poly_gt = obb2poly(format_data['sup']['gt_bboxes'][batch])
+            # 可视化proposals框
+            img = OpenCVDrawBox(img, poly_rbb.cpu().numpy(), poly_rbb, poly_rbb, (0,0,255), 1)
+            # 可视化GT框
+            img = OpenCVDrawBox(img, poly_gt.cpu().numpy(), poly_gt, poly_gt, (0,255,0), 2)
+            # 保存结果
+            if not os.path.exists('./vis_res_wo_nms'):os.makedirs('./vis_res_wo_nms')
+            img_save_path = f"./vis_res_wo_nms/{img_name}"
+            cv2.imwrite(img_save_path, img)
+
+
+
+
+
+
+
+
+
+
+        '''/data/yht/code/sood-mcl/semi_mmrotate/models/rotated_dt_baseline.py 可视化 proposals 与 refine_proposals'''
+        # 只推理
+        with torch.no_grad():
+            refine_box_list = []
+            # 还需先将rbbox转成水平外接矩
+            # hproposal_list = [obb2xyxy(p, 'le90') for p in proposal_list]
+            refine_bbox = self.student.roi_head.simple_test(sup_fpn_feat, hproposal_list, format_data['sup']['img_metas'], rescale=True)
+            # 调整输出格式, 把所有类别下的预测结果拼在一起
+            for i in range(bs):
+                res = np.concatenate(refine_bbox[i], axis=0)
+                refine_box_list.append(res)
+
+        # 图像和图像名(默认batch=1)
+        root_dir = './vis_res_wo_nms'
+        img_names = [img_meta['ori_filename'] for img_meta in format_data['sup']['img_metas']]
+        images = format_data['sup']['img']
+        # 每张图片分别可视化
+        for batch in range(bs):
+            img_name = img_names[batch]
+            # 原图预处理
+            std = np.array([58.395, 57.12 , 57.375]) / 255.
+            mean = np.array([123.675, 116.28 , 103.53]) / 255.
+            img = images[batch].permute(1,2,0).cpu().numpy()
+            img = np.clip(img * std + mean, 0, 1)
+            img = (img * 255.).astype(np.uint8)
+            img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+            # 5参转8参
+            poly_rbb = obb2poly(proposal_list[batch])
+            poly_refine_rbb = obb2poly(torch.tensor(refine_box_list[batch]).squeeze(0))
+            # poly_gt = obb2poly(format_data['sup']['gt_bboxes'][batch])
+            # 可视化proposals框
+            img = OpenCVDrawBox(img, poly_rbb.cpu().numpy(), poly_rbb, poly_rbb, (0,0,255), 1)
+            # 可视化refine proposals框
+            img = OpenCVDrawBox(img, poly_refine_rbb.numpy(), poly_refine_rbb, poly_refine_rbb, (0,255,0), 1)
+            # 可视化GT框
+            # img = OpenCVDrawBox(img, poly_gt.cpu().numpy(), poly_gt, poly_gt, (0,255,0), 2)
+            # 保存结果
+            if not os.path.exists(root_dir):os.makedirs(root_dir)
+            img_save_path = f"{root_dir}/{img_name}"
+            cv2.imwrite(img_save_path, img)
