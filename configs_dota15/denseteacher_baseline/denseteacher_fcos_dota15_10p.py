@@ -18,7 +18,8 @@ nc = 16
 # 伪标签筛选超参
 semi_loss = dict(type='RotatedDTBLLoss', cls_channels=nc, loss_type='origin', bbox_loss_type='l1', 
                  # 'topk', 'top_dps', 'catwise_top_dps', 'global_w', 'sla'
-                 p_selection = dict(mode='global_w', k=0.01, beta=2.0),
+                #  p_selection = dict(mode='global_w', k=0.01, beta=2.0),
+                p_selection = dict(mode='sla', k=0.01, beta=1.0),
                  # 蒸馏超参数  'kld', 'l2', 'qflv2'
                  distill = dict(mode='l2', beta=1.0, loss_weight=1.0),
                  )
@@ -28,6 +29,14 @@ prototype = dict(cat_nums=nc, mode='ema', loss_weight = 1.)
 unsup_loss_weight = 1.0
 # burn_in_steps
 burn_in_steps = 12800
+# 是否使用高斯椭圆标签分配 (注意GA分配得搭配QualityFocalLoss)
+bbox_head_type = 'SemiRotatedBLFCOSGAHead'
+loss_cls=dict(type='QualityFocalLoss', use_sigmoid=True, beta=2.0, loss_weight=1.0, activated=True)
+# bbox_head_type = 'SemiRotatedBLFCOSHead'
+# loss_cls=dict(type='FocalLoss', use_sigmoid=True, gamma=2.0, alpha=0.25, loss_weight=1.0)
+
+
+
 
 angle_version = 'le90'
 # model settings
@@ -53,7 +62,7 @@ detector = dict(
         num_outs=5,
         relu_before_extra_convs=True),
     bbox_head=dict(
-        type='SemiRotatedBLFCOSHead',
+        type=bbox_head_type,
         num_classes=nc,
         in_channels=256,
         stacked_convs=4,
@@ -67,12 +76,7 @@ detector = dict(
         scale_angle=True,
         bbox_coder=dict(
             type='DistanceAnglePointCoder', angle_version=angle_version),
-        loss_cls=dict(
-            type='FocalLoss',
-            use_sigmoid=True,
-            gamma=2.0,
-            alpha=0.25,
-            loss_weight=1.0),
+        loss_cls=loss_cls,
         loss_bbox=dict(type='RotatedIoULoss', loss_weight=1.0),
         loss_centerness=dict(
             type='CrossEntropyLoss', use_sigmoid=True, loss_weight=1.0)),

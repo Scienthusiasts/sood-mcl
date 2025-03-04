@@ -25,8 +25,8 @@ python test.py \
 
 
 # 终端输出日志重定向:
-sh run.sh > log/dtbaseline/DOTA1.5/10per_denoise/global-w/joint-score-beta-2.0_burn-in-12800_orcnn-head_all-refine-loss_box-O2M-loss_detach_GA_2/terminal_log.log 2>&1
-
+sh run.sh > log/dtbaseline/DOTA1.5/10per_denoise/global-w/joint-score-beta-2.0_burn-in-12800_orcnn-head_all-refine-loss_box-O2M-loss_detach_GA_7/terminal_log.log 2>&1
+sh run.sh > log/dtbaseline/DOTA1.5/10per_denoise/global-w/joint-score-beta-2.0_burn-in-12800_GA_7/terminal_log.log 2>&1
 
 
 
@@ -130,6 +130,16 @@ self.convert_shape(teacher_logits) 换成 self.convert_shape(teacher_logits[:-1]
 t_joint_scores = t_centernesses.sigmoid().reshape(-1) * t_scores 换成 t_joint_scores = refine_t_joint_score.max(dim=1)[0]
 
 
+# 如何将高斯椭圆标签分配方法添加到模型中
+(1) 添加 /data/yht/code/sood-mcl/semi_mmrotate/models/dense_heads/semi_rotated_baseline_fcos_ga_head.py -> SemiRotatedBLFCOSGAHead
+(2) 修改config配置文件
+
+
+# 调整的/data/yht/code/sood-mcl/semi_mmrotate/models/losses/rotated_dt_baseline_loss_old.py
+rotated_dt_baseline_loss_old.py依然保留所有25.01.01之前用到的各种实验过无效的策略(比如所有伪标签筛选策略, 多尺度特征蒸馏, 基于GCA加权global_w的损失等等), 方便之后可能再次使用
+rotated_dt_baseline_loss.py则删除了所有无效的策略
+
+
 # 如何添加微调去噪模块(类似在一阶段上再加一个roihead变成二阶段)
 (1) config文件修改
 添加 /data/yht/code/sood-mcl/configs_dota15/denseteacher_baseline/denseteacher_fcos_refinehead_dota15_10p_debug.py
@@ -143,20 +153,33 @@ __init__() 修改两处
 多回传 flatten_bbox_preds, flatten_angle_preds
 (4) 添加 /data/yht/code/sood-mcl/semi_mmrotate/models/roi_heads/rfrcnn_roi_head.py 并注册
 
-(5)目前的问题:
+(5) 
 在全监督部分需要获取bbox的回归结果(用于计算proposal_list), 
 因此还需要 /data/yht/code/sood-mcl/semi_mmrotate/models/dense_heads/semi_rotated_baseline_fcos_head.py 的loss函数返回 flatten_bbox_preds 和 flatten_angle_preds
 返回之后还要对回归结果进行解码得到真实图像尺度下的坐标框
 其他有待修改的地方具体可以参考 /data/yht/code/sood-mcl/mmrotate-0.3.4/mmrotate/models/detectors/two_stage.py
 
-# 如何将高斯椭圆标签分配方法添加到模型中
-(1) 添加 /data/yht/code/sood-mcl/semi_mmrotate/models/dense_heads/semi_rotated_baseline_fcos_ga_head.py -> SemiRotatedBLFCOSGAHead
-(2) 修改config配置文件
+25_1_19:
+(6) 开始修改roihead部分, 最终目的是实现框的聚合(目前想到用注意力)
+首先, 发现在box_head部分, 是所有box(形状是[1024, 256, 7, 7])一起进入fc层的, 可能需要再加一个分组的维度(比如变成[1024/group, group, 256, 7, 7]), 而这个分组就需要参考正负样本分配的结果.
+总之, 目前需要先解决在特征层面把box分组 [1024, 256, 7, 7] -> [1024/group, group, 256, 7, 7], 后续再考虑用什么网络聚合
+目前正在debuging...:
+/data/yht/code/sood-mcl/semi_mmrotate/models/roi_heads/orcnn_roi_head.py -> _bbox_forward_train() 这个函数
+rois = rbbox2roi([res.bboxes for res in sampling_results]) 这一行返回rois的坐标(形状是(1024, 6), [batch_ind, cx, cy, w, h, a]), 没有分组信息
+其中的sampling_results是lis, 长度为bs, sampling_results[i]记录的信息如下:
+<SamplingResult({
+    'neg_bboxes':          记录负样本的box坐标 torch.Size([384, 5]),
+    'neg_inds':            记录负样本在特征图上的索引位置, torch.Size([384]),
+    'num_gts':             每张图上gt的个数, int,
+    'pos_assigned_gt_inds':记录每个正样本分配给哪个GT torch.Size([128]) 这里可以得到分组信息, 但是每个gt分配到的样本数不一样,且没有置信度信息
+    'pos_bboxes':          记录正样本的box坐标 torch.Size([128, 5]),
+    'pos_inds':            记录负样本在特征图上的索引位置, torch.Size([128]),
+    'pos_is_gt':           记录哪些正样本直接是GT的copy, 值为0或1. torch.Size([128,]),
+})>
+
+bbox_results = self._bbox_forward(x, rois) 这一行是返回box_head已经推理出的结果, 有两个bbox_results['cls_score']和bbox_results['bbox_pred'](形状分别是[1024, 17]和[1024, 5]), 没有分组信息
 
 
-# /data/yht/code/sood-mcl/semi_mmrotate/models/losses/rotated_dt_baseline_loss_old.py
-rotated_dt_baseline_loss_old.py依然保留所有25.01.01之前用到的各种实验过无效的策略(比如所有伪标签筛选策略, 多尺度特征蒸馏, 基于GCA加权global_w的损失等等), 方便之后可能再次使用
-rotated_dt_baseline_loss.py则删除了所有无效的策略
 
 
 
@@ -171,6 +194,58 @@ rotated_dt_baseline_loss.py则删除了所有无效的策略
 
 
 
+
+
+目前的bug:
+(0) 目前refine_head的梯度还是和其他部分的网络截断的
+(1) scale_angle的问题:
+/data/yht/code/sood-mcl/semi_mmrotate/models/rotated_dt_baseline.py 文件下rbb_decode函数里是否需要加上scale_angle
+目前的初步判断是不需要加上(加上之后可视化出来的框位置不准确,去掉后位置就准确了)
+(2) 多卡训练报错: AssertionError: loss log variables are different across GPUs!
+目前怀疑是多卡训练时不同卡上的梯度类型不一致导致的, 原因是因为比如gpu0上没有正样本, 但是gpu1上有正样本(现象出现在无监督分支), 这样一来loss的计算方法就不一样了, 导致梯度类型不一致:
+具体体现在/data/yht/code/sood-mcl/semi_mmrotate/models/dense_heads/semi_rotated_baseline_fcos_head.py 的328行和352行
+当有正样本时,loss正常计算, 返回的loss的梯度类型是<MulBackward0>, 当没有正样本时, loss的梯度类型是<SumBackward0>
+
+[尝试1]: 目前发现通过强制设置loss=0(无梯度),在debug的时候不报错, 正常训练的时候还是会报错
+进一步在/data/yht/code/sood-mcl/semi_mmrotate/models/dense_heads/semi_rotated_baseline_fcos_ga_head.py: loss()
+通过下面代码发现, gt的数量至少为1, 但是通过标签分配后num_pos的数量可能为0:
+# 统计gt和num_pos的数量
+if len(gt_labels)==1:
+    print(gt_labels[0].shape, num_pos)
+
+[尝试2]: 在/data/yht/code/sood-mcl/semi_mmrotate/models/dense_heads/semi_rotated_baseline_fcos_ga_head.py: loss():
+添加valid_mask 有正样本时为1.0, 否则为0.0 并且初始化loss: loss_bbox = torch.zeros(1, device=flatten_points.device, requires_grad=True).squeeze()
+最终打印出来loss的梯度类型一致, 但是还是报错 AssertionError: loss log variables are different across GPUs!, 怀疑可能不是梯度类型的问题, 而是变量不一致的问题
+
+[尝试3]: 在/home/yht/.conda/envs/sood-mcl/lib/python3.9/site-packages/mmdet/models/detectors/base.py: _parse_losses():
+注释掉:
+            assert log_var_length == len(log_vars) * dist.get_world_size(), \
+                'loss log variables are different across GPUs!\n' + message
+by the way, 再调试这部分时, 还遇到一个问题:log_var_length本来=6, 但是经过dist.all_reduce(log_var_length)后, log_var_length会变成一个很随机的数, 比如2466942019529946246, 这是为什么
+然后产生了新的报错(大致就是某部分带梯度的参数没更新):
+RuntimeError: Expected to have finished reduction in the prior iteration before starting a new one. This error indicates that your module has parameters that were not 
+used in producing loss. You can enable unused parameter detection by passing the keyword argument `find_unused_parameters=True` to `torch.nn.parallel.DistributedDataParallel`, and by 
+making sure all `forward` function outputs participate in calculating loss. 
+If you already have done the above, then the distributed data parallel module wasn't able to locate the output tensors in the return value of your module's `forward` 
+function. Please include the loss function and the structure of the return value of `forward` of your module when reporting this issue (e.g. list, dict, iterable).
+Parameter indices which did not receive grad for rank 0: 172 173 179
+ In addition, you can set the environment variable TORCH_DISTRIBUTED_DEBUG to either INFO or DETAIL to print out information about which particular parameters did not receive gradient on this rank as part of this error
+目前怀疑是debug时只是强制让不同gpu计算不同的loss, 而不是真正遇到num_pos==0时才计算不同loss, 因此打算从头完整训练一遍, 看是否还会报错
+测试后还是报错, 怀疑不好在统一损失这块进行改动:
+RuntimeError: NCCL communicator was aborted on rank 0.  Original reason for failure was: [Rank 0] Watchdog caught collective operation timeout: WorkNCCL(SeqNum=1800691, OpType=ALLREDUCE, Timeout(ms)=1800000) ran for 1805630 milliseconds before timing out.
+
+[尝试4]: 
+在: /data/yht/code/sood-mcl/semi_mmrotate/models/dense_heads/semi_rotated_baseline_fcos_ga_head.py -> loss()
+使用 dist.all_reduce()进行多卡之间的通信, 只要有一张卡上没有正样本, 则所有卡上的loss计算方式统一为无正样本的loss计算方式
+现在貌似不会报错了
+
+
+(3) 多卡训练报错(引入自监督分支产生的问题): pos = ((label >= 0) & (label < bg_class_ind)).nonzero().squeeze(1) (这个报错的地方很奇怪, 和下面找到的问题看似没有直接联系:)
+"/data/yht/code/sood-mcl/semi_mmrotate/models/dense_heads/semi_rotated_baseline_fcos_ga_head.py" ->"/home/yht/.conda/envs/sood-mcl/lib/python3.9/site-packages/mmdet/models/losses/gfocal_loss.py" -> pos = ((label >= 0) & (label < bg_class_ind)).nonzero().squeeze(1)
+一开始发现在自监督分支只要一加上 ss_loss_cnt即中心度损失, 一训练就会报上面的错误, 不加ss_loss_cnt训练到中途也会报这个错
+后面发现直接导致的原因是是对特征执行旋转操作, 空白部分填充0, 在计算 F.binary_cross_entropy 时会报错, 如果填充一个不为0但是很小的错, 就不会报错了
+
+再之后, 发现训练到中途依然会报这个错, 且是由于加上了ss_loss_box引起的(只加ss_loss_cnt和ss_loss_cls能完整的训练完) 目前还未发现是什么原因
 
 
 

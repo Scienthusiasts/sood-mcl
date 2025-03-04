@@ -15,11 +15,11 @@
             "args": [
                 "--nnodes=1",
                 "--nproc_per_node=2",
-                "--master_port=29550",
-                "tools/train.py",
-                "configs_dota15/denseteacher_baseline/denseteacher_fcos_refinehead_dota15_10p_debug.py",
+                "--master_port=29540",
+                "train.py",
+                "configs_dota15/denseteacher_baseline/denseteacher_fcos_refineORCNNhead_dota15_10p_debug.py",
                 "--launcher=pytorch",
-                "--work-dir=/data/yht/code/sood-mcl/log/dtbaseline/DOTA1.0/debug"
+                "--work-dir=/data/yht/code/sood-mcl/log/dtbaseline/debug"
             ],
             "env": {
                 "CUDA_VISIBLE_DEVICES": "0,1",

@@ -11,7 +11,7 @@ from .semi_rotated_baseline_fcos_head import SemiRotatedBLFCOSHead
 import matplotlib.pyplot as plt
 import os
 import numpy as np
-
+import torch.distributed as dist
 
 INF = 1e8
 
@@ -78,15 +78,23 @@ class SemiRotatedBLFCOSGAHead(SemiRotatedBLFCOSHead):
                     & (flatten_labels < bg_class_ind)).nonzero().reshape(-1)
         num_pos = torch.tensor(
             len(pos_inds), dtype=torch.float, device=bbox_preds[0].device)
+            
         num_pos = max(reduce_mean(num_pos), 1.0)
-
         pos_bbox_preds = flatten_bbox_preds[pos_inds]
         pos_angle_preds = flatten_angle_preds[pos_inds]
         pos_centerness = flatten_centerness[pos_inds]
         pos_bbox_targets = flatten_bbox_targets[pos_inds]
         pos_angle_targets = flatten_angle_targets[pos_inds]
 
-        if len(pos_inds) > 0:
+        # NOTE: 使用dist.all_reduce同步操作, 当某张卡上不存在正样本时，所有卡都采用无正样本的loss计算方式
+        # has_pos 判断当前gpu上是否有正样本
+        has_pos = torch.tensor(len(pos_inds)>0, dtype=torch.int32, device=pos_bbox_preds.device)
+        # if len(pos_inds) < 10: has_pos = torch.tensor(0, dtype=torch.int32, device=pos_bbox_preds.device)
+        local_has_pos = has_pos.clone()
+        # 进行多卡之间通信, 此时has_pos数值为所有gpu上has_pos的值之和, 当所有卡上都有正样本时has_pos == dist.get_world_size(), 否则不等
+        dist.all_reduce(has_pos, op=dist.ReduceOp.SUM)
+
+        if has_pos == dist.get_world_size():
             pos_points = flatten_points[pos_inds]
             if self.separate_angle:
                 bbox_coder = self.h_bbox_coder
@@ -121,11 +129,14 @@ class SemiRotatedBLFCOSGAHead(SemiRotatedBLFCOSHead):
                 loss_angle = self.loss_angle(
                     pos_angle_preds, pos_angle_targets, avg_factor=num_pos)
         else:
-            loss_bbox = pos_bbox_preds.sum()
-            loss_centerness = pos_centerness.sum()
+            # weight当某张卡上无正样本时, 保证其他卡上的损失为0
+            weight = 1 - local_has_pos
+            loss_bbox = pos_bbox_preds.sum() * weight
+            loss_centerness = pos_centerness.sum() * weight
             if self.separate_angle:
-                loss_angle = pos_angle_preds.sum()
-        
+                loss_angle = pos_angle_preds.sum() * weight
+            print(f"local_has_pos:{local_has_pos}, loss_bbox:{loss_bbox}")
+
         joint_confidence_scores = flatten_cls_scores.sigmoid() * flatten_centerness.sigmoid()[:, None]
         loss_cls = self.loss_cls(
                     joint_confidence_scores, (flatten_labels, flatten_centerness_targets), avg_factor=num_pos)
@@ -278,11 +289,13 @@ class SemiRotatedBLFCOSGAHead(SemiRotatedBLFCOSHead):
         min_area, min_area_inds = areas.min(dim=1)
 
         labels = gt_labels[min_area_inds]
-        labels[min_area == INF] = self.num_classes  # set as BG
+        labels[min_area == INF] = self.num_classes  # set as BG         
         bbox_targets = bbox_targets[range(num_points), min_area_inds]
         angle_targets = gt_angle[range(num_points), min_area_inds]
 
         centerness_targets = 1 - gaussian_center[range(num_points), min_area_inds]
+        # if (gt_labels.shape[0]==1):
+        #     print(gt_labels.shape, (min_area!=INF).sum(), bbox_targets.shape, angle_targets.shape, centerness_targets.shape)
 
         '''可视化'''
         # root_dir = './soft_GA'

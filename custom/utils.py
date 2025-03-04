@@ -3,8 +3,84 @@ import numpy as np
 import cv2
 import os
 from mmrotate.core import rbbox2result, poly2obb_np, obb2poly, poly2obb, build_bbox_coder, obb2xyxy
+from mmdet.core.anchor.point_generator import MlvlPointGenerator
 from mmrotate.core import build_bbox_coder, multiclass_nms_rotated
 from mmcv.ops import box_iou_quadri, box_iou_rotated
+from torchvision.transforms.functional import rotate, pad
+import torch.nn.functional as F
+import random
+
+
+
+
+
+bbox_coder = build_bbox_coder(dict(type='DistanceAnglePointCoder', angle_version='le90'))
+prior_generator = MlvlPointGenerator([8, 16, 32, 64, 128])
+
+def decode_rbbox(bbox_preds, ):
+    '''对bbox解码回原图的尺寸
+        Args:
+            t_bbox_preds: [total_anchor_num, 5=(cx, cy, w, h, θ)]
+
+        Returns:
+            decode_bbox_preds: 
+    '''
+    # 1. 获得grid网格点坐标
+    all_level_points = prior_generator.grid_priors(
+        [[128, 128], [64,64], [32,32], [16,16], [8,8]],
+        dtype=bbox_preds.dtype,
+        device=bbox_preds.device
+        )
+    # [[h1*w1, 2], ..., [h5*w5, 2]] -> [total_anchor_num, 2]
+    concat_points = torch.cat(all_level_points, dim=0)
+    # 2. 对bbox的乘上对应的尺度
+    lvl_range  = [0, 16384, 20480, 21504, 21760, 21824]
+    lvl_stride = [8, 16, 32, 64, 128]
+    for i in range(5):
+        bbox_preds[lvl_range[i]:lvl_range[i+1], :4] *= lvl_stride[i]
+    # 3. 对预测的bbox解码得到最终的结果
+    decode_bbox_preds = bbox_coder.decode(concat_points, bbox_preds)
+    return decode_bbox_preds
+
+
+
+
+
+def convert_shape_single(logits, dim, bs_dim=True):
+    '''将模型输出logit(一种tensor) reshape
+    '''
+    bs = logits[0].shape[0]   
+    # [[bs, dim, h1, w1], ...[bs, dim, h5, w5]] -> [total_grid_num, dim]
+    if bs_dim: 
+        reshape_logits = [x.permute(0, 2, 3, 1).reshape(bs, -1, dim) for x in logits]
+        reshape_logits = torch.cat(reshape_logits, dim=1).view(-1, dim)
+    else:
+        reshape_logits = [x.reshape(-1, dim) for x in logits]
+        reshape_logits = torch.cat(reshape_logits, dim=0).view(-1, dim)
+    return reshape_logits
+
+
+def convert_shape(logits, nc, wo_cls_score=False):
+    '''将模型输出logit reshape
+    '''
+    cls_scores, bbox_preds, angle_preds, centernesses, fpn_feat = logits
+    bs = bbox_preds[0].shape[0]
+    # wo_cls_score=True时表示cls_scores已经是prototype refine过的
+    if wo_cls_score==False:
+        assert len(cls_scores) == len(bbox_preds) == len(angle_preds) == len(centernesses) == len(fpn_feat)
+        # [[bs, cat_num, h1, w1], ...[bs, cat_num, h5, w5]] -> [total_grid_num, cat_num]
+        cls_scores = convert_shape_single(cls_scores, nc)
+    else:
+        assert len(bbox_preds) == len(angle_preds) == len(centernesses) == len(fpn_feat)
+
+    # [[bs, 4+1, h1, w1], ...[bs, 4+1, h5, w5]] -> [total_grid_num, 5] box是坐标和角度拼在一起
+    bbox_preds = [torch.cat([x, y], dim=1).permute(0, 2, 3, 1).reshape(bs, -1, 5) for x, y in zip(bbox_preds, angle_preds)]
+    bbox_preds = torch.cat(bbox_preds, dim=1).view(-1, 5)
+    # [[bs, 1, h1, w1], ...[bs, 1, h5, w5]] -> [total_grid_num, 1]
+    centernesses = convert_shape_single(centernesses, 1)
+    # [[bs, 256, h1, w1], ...[bs, 256, h5, w5]] -> [total_grid_num, 256]
+    fpn_feat = convert_shape_single(fpn_feat, 256)
+    return [cls_scores, bbox_preds, centernesses, fpn_feat], bs
 
 
 
@@ -59,7 +135,7 @@ def batch_nms(t_results, t_cls_scores):
             max_num=2000,                                # 2000
             score_factors=t_results[i, :, 5]             # [total_box_num]
             )
-        # 保证每张图片一定会有一个pgt(否则微调模块不好搞定)
+        # 保证每张图片一定会有一个pgt(置信度最大的那个)(否则微调模块不好搞定)
         if det_bboxes.shape[0]==0: 
             max_idx = torch.argmax(t_results[i, :, 5])
             det_bboxes = t_results[i, max_idx,:6].unsqueeze(0)
@@ -104,3 +180,73 @@ def batch_grouping_by_gts(dense_bboxes, gt_bboxes, iou_thres=0.1, score_thres=1e
         batch_group_id_mask.append(group_id_mask)
         batch_keep_dense_bboxes.append(keep_dense_bboxes)
     return batch_group_iou, batch_group_id_mask, batch_keep_dense_bboxes
+
+
+
+
+
+
+def batch_tensor_random_flip(tensor, p=0.5):
+    '''对图像进行随机翻转(或以概率p不翻转)'''
+    if p==0.0: 
+        return tensor, False
+    # 生成一个随机数
+    rand_num = random.uniform(0,1)
+    if rand_num >= p:
+        return tensor, False
+    else:
+        # 在第2维（h维度）上翻转, 相当于垂直翻转 (上下翻转)
+        # 如果是水平翻转就第三维度
+        vflip_tensor = torch.flip(tensor, dims=[2])
+        return vflip_tensor, True
+
+
+
+def batch_tensor_random_rotate(tensor, angle_range, rand=True):
+    '''对张量图像进行随机角度旋转(使用镜像填充), 并返回旋转mask
+        Args:
+            tensor: 张量图像, 形状为[bs, 3, h, w]
+            angle_range: 随机旋转的角度(角度)范围[min, max]
+
+        Returns:
+            rotaug_img: 旋转后的图像
+            rand_angle: 旋转的角度
+    '''
+    # 生成一个随机角度
+    if rand:
+        rand_angle = random.uniform(angle_range[0], angle_range[1])
+    else:
+        return tensor, 0.
+    # 先进行镜像填充
+    padded_tensor, padded_len = pad_tensor(tensor, (2**0.5 - 1) / 2)
+    # 再进行旋转操作
+    rotaug_img = rotate(padded_tensor, rand_angle, expand=False)
+    h, w = rotaug_img.shape[2:]
+    # rotaug_img去掉padding的部分, 还原为原始大小(这样就能去除掉padding的黑色填充, 只保留镜像填充)
+    rotaug_img = rotaug_img[..., padded_len[0]:h-padded_len[2], padded_len[1]:w-padded_len[3]]
+    # ori_mask = F.interpolate(ori_mask.unsqueeze(1), scale_factor=1/16, mode='nearest').squeeze(1)
+    return rotaug_img, rand_angle
+
+
+
+
+
+def pad_tensor(tensor, k, fill='reflect'):
+    '''对张量图像进行padding, 
+        Args:
+            tensor: 张量图像, 形状为[bs, 3, h, w]
+            k:      padding的大小为边长的k倍
+            fill:   padding部分的填充方式, 默认镜像填充
+
+        Returns:
+            padded_tensor: padding后的张量, 形状为[bs, 3, h, w]
+            padded_len:    四条边padding的长度
+    '''
+    h, w = tensor.shape[2:]
+    # 计算每个边界的 padding 大小 (k 倍边长)
+    padding_top = padding_bottom = round(h * k)
+    padding_left = padding_right = round(w * k)
+    # 对张量进行 padding, 使用镜像填充
+    padded_tensor = pad(tensor, (padding_left, padding_right, padding_top, padding_bottom), padding_mode=fill)
+    pad_len = [padding_top, padding_left, padding_bottom, padding_right]
+    return padded_tensor, pad_len

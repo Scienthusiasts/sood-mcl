@@ -167,8 +167,6 @@ class RotatedConvFCBBoxHead(RotatedBBoxHead):
 
     def forward(self, x):
         """Forward function."""
-        # self.num_shared_convs, self.num_shared_fcs, self.with_avg_pool, self.with_cls, self.with_reg = 0, 2, False, True, True
-        # x.shape = [1024, 256, 7, 7]
         if self.num_shared_convs > 0:
             for conv in self.shared_convs:
                 x = conv(x)
@@ -180,13 +178,11 @@ class RotatedConvFCBBoxHead(RotatedBBoxHead):
             x = x.flatten(1)
 
             for fc in self.shared_fcs:
-                # [1024, 256*7*7] -> [1024, 1024]
                 x = self.relu(fc(x))
         # separate branches
         x_cls = x
         x_reg = x
 
-        # self.cls_convs, self.cls_fcs, self.reg_convs, self.reg_fcs 全为空
         for conv in self.cls_convs:
             x_cls = conv(x_cls)
         if x_cls.dim() > 2:
@@ -204,10 +200,8 @@ class RotatedConvFCBBoxHead(RotatedBBoxHead):
             x_reg = x_reg.flatten(1)
         for fc in self.reg_fcs:
             x_reg = self.relu(fc(x_reg))
-        
-        # cls_score.shape = [1024, 17]
+
         cls_score = self.fc_cls(x_cls) if self.with_cls else None
-        # bbox_pred.shape = [1024, 5]
         bbox_pred = self.fc_reg(x_reg) if self.with_reg else None
         return cls_score, bbox_pred
 

@@ -441,6 +441,8 @@ class SemiRotatedBLFCOSHead(RotatedAnchorFreeHead):
         return (concat_lvl_labels, concat_lvl_bbox_targets,
                 concat_lvl_angle_targets)
 
+
+
     def _get_target_single(self, gt_bboxes, gt_labels, points, regress_ranges,
                            num_points_per_lvl):
         """Compute regression, classification and angle targets for a single

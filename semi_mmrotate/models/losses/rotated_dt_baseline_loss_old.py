@@ -541,7 +541,6 @@ def KLD(s, t):
 
 
 
-
 def soft_GCA_single(gt_bboxes, points, gt_scores):
     '''基于高斯椭圆的方法将伪标签转化为global_w的weight_mask
         Args:

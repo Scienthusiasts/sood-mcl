@@ -20,7 +20,7 @@ nc = 16
 semi_loss = dict(type='RotatedDTBLLoss', cls_channels=nc, loss_type='origin', bbox_loss_type='l1', 
                  # 'topk', 'top_dps', 'catwise_top_dps', 'global_w', 'sla'
                  p_selection = dict(mode='global_w', k=0.01, beta=2.0),
-                # p_selection = dict(mode='sla', k=0.01, beta=1.0),
+                #  p_selection = dict(mode='sla', k=0.01, beta=1.0),
                  # 蒸馏超参数  'kld', 'l2', 'qflv2'
                  distill = dict(mode='l2', beta=1.0, loss_weight=1.0),
                  )
@@ -35,7 +35,9 @@ loss_cls=dict(type='QualityFocalLoss', use_sigmoid=True, beta=2.0, loss_weight=1
 # loss_cls=dict(type='FocalLoss', use_sigmoid=True, gamma=2.0, alpha=0.25, loss_weight=1.0)
 # burn_in_steps:
 burn_in_steps = 12800
-
+# 是否导入权重
+# load_from = 'log/dtbaseline/DOTA1.5/10per_denoise/global-w/joint-score-beta-2.0_burn-in-12800_orcnn-head_all-refine-loss_box-O2M-loss_detach_GA/latest.pth'
+load_from = None
 
 
 
@@ -369,7 +371,6 @@ log_config = dict(
 
 dist_params = dict(backend='nccl')
 log_level = 'INFO'
-load_from = None
 resume_from = None
 workflow = [('train', 1)]   # mode, iters
 

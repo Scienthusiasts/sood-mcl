@@ -22,7 +22,7 @@ from custom.utils import *
 from custom.visualize import *
 from mmrotate.core import build_bbox_coder, multiclass_nms_rotated
 from mmcv.ops import box_iou_quadri, box_iou_rotated
-
+from custom.loss import QFLv2
 
 INF = 1e8
 CLASSES = ('large-vehicle', 'swimming-pool', 'helicopter', 'bridge', 'plane', 
@@ -49,32 +49,9 @@ class RotatedDTBLLoss(nn.Module):
         self.p_selection = p_selection
         # 特征蒸馏超参, added by yan
         self.distill = distill
+        # QFLv2损失
+        self.QFLv2 = QFLv2()
 
-
-    def convert_shape(self, logits, wo_cls_score=False):
-        '''将模型输出logit reshape
-        '''
-        cls_scores, bbox_preds, angle_preds, centernesses, fpn_feat = logits
-        bs = bbox_preds[0].shape[0]
-        # wo_cls_score=True时表示cls_scores已经是prototype refine过的
-        if wo_cls_score==False:
-            assert len(cls_scores) == len(bbox_preds) == len(angle_preds) == len(centernesses) == len(fpn_feat)
-            # [[bs, cat_num, h1, w1], ...[bs, cat_num, h5, w5]] -> [total_grid_num, cat_num]
-            cls_score = [x.permute(0, 2, 3, 1).reshape(bs, -1, self.cls_channels) for x in cls_scores]
-            cls_scores = torch.cat(cls_score, dim=1).view(-1, self.cls_channels)
-        else:
-            assert len(bbox_preds) == len(angle_preds) == len(centernesses) == len(fpn_feat)
-
-        # [[bs, 4+1, h1, w1], ...[bs, 4+1, h5, w5]] -> [total_grid_num, 5]
-        bbox_preds = [torch.cat([x, y], dim=1).permute(0, 2, 3, 1).reshape(bs, -1, 5) for x, y in zip(bbox_preds, angle_preds)]
-        bbox_preds = torch.cat(bbox_preds, dim=1).view(-1, 5)
-        # [[bs, 1, h1, w1], ...[bs, 1, h5, w5]] -> [total_grid_num, 1]
-        centernesses = [x.permute(0, 2, 3, 1).reshape(bs, -1, 1) for x in centernesses]
-        centernesses = torch.cat(centernesses, dim=1).view(-1, 1)
-        # [[bs, 256, h1, w1], ...[bs, 256, h5, w5]] -> [total_grid_num, 256]
-        fpn_feat = [x.permute(0, 2, 3, 1).reshape(bs, -1, 256) for x in fpn_feat]
-        fpn_feat = torch.cat(fpn_feat, dim=1).view(-1, 256)
-        return cls_scores, bbox_preds, centernesses, fpn_feat, bs
 
 
     def pseudoLabelSelection(self, mode:str, teacher_logits, t_cls_scores, t_bbox_preds, t_centernesses, ratio:float, beta:float, refine_t_joint_score=None):
@@ -182,13 +159,12 @@ class RotatedDTBLLoss(nn.Module):
 
 
 
-    def forward(self, student, teacher, teacher_logits, student_logits, img_metas=None, stu_img_metas=None, **kwargs):
+    def forward(self, student, teacher, reshape_t_logits, reshape_s_logits, student_logits, teacher_logits, bs, img_metas=None, stu_img_metas=None, **kwargs):
         self.img_metas = img_metas
-        # 对输出的特征进行reshape
-        # [total_grid_num, cat_num], [total_grid_num, 4+1], [total_grid_num, 1], [total_grid_num, 256]
+
         # 注意cls_scores和centernesses都是未经过sigmoid()的logits
-        t_cls_scores, t_bbox_preds, t_centernesses, t_fpn_feat, bs = self.convert_shape(teacher_logits)
-        s_cls_scores, s_bbox_preds, s_centernesses, s_fpn_feat, bs = self.convert_shape(student_logits)
+        t_cls_scores, t_bbox_preds, t_centernesses, _ = reshape_t_logits
+        s_cls_scores, s_bbox_preds, s_centernesses, _ = reshape_s_logits
         refine_t_joint_score = teacher_logits[-1]
 
         '''多对一匹配进行伪标签学习'''
@@ -197,23 +173,27 @@ class RotatedDTBLLoss(nn.Module):
         nms_bboxes, nms_labels, group_iou, group_id_mask, keep_dense_bboxes, all_bboxes = self.decode_and_grouping(teacher_logits, t_bbox_preds.clone(), t_cls_scores.sigmoid(), t_centernesses.sigmoid(),  stu_img_metas)
         # 调整格式(注意, 这里的proposal_list拿的就是分组之后的框而不是所有的框了)
         # TODO: 存在的问题:分组的框依然会存在漏检的问题
-        all_proposal_list = [all_bboxes[:, :5]] if nms_bboxes.shape[0]!=0 else []
-        proposal_list = [keep_dense_bboxes[:, :5]] if nms_bboxes.shape[0]!=0 else []
+        # proposal_list本来只包括坐标, 现在连score也加进去:
+        all_proposal_list = [all_bboxes[:, :6]] if nms_bboxes.shape[0]!=0 else []
+        proposal_list = [keep_dense_bboxes[:, :6]] if nms_bboxes.shape[0]!=0 else []
         nms_bboxes_list = [nms_bboxes[:, :5]] if nms_bboxes.shape[0]!=0 else []
         nms_labels_list = [nms_labels] if nms_bboxes.shape[0]!=0 else []
 
         '''无监督部分训练refine head(GT为Teacher经过nms后的结果)'''
-        # 1.送入roi head进行微调
+        # 1.送入roi head进行微调(其实相当于一个二阶段检测器的检测头)
         # TODO: 有一个问题, 调用forward_train函数时, 会再执行一次正负样本分配而不是采用已经分好的组
         # [[bs, 256, h1, w1], ...], [[roi_nums, 5], ...], [[gt_nums], ...], [[gt_nums, 5], ...]
         # 注意 roi_head.forward_train接受的回归框坐标的格式是[cx, cy, w, h, a]
+        # NOTE:Ablation1: 断开refine-head与主体检测器的梯度
         stu_fpn_feat = [fpn_feat.detach() for fpn_feat in student_logits[4]]
+        # NOTE:Ablation2: 维持refine-head与主体检测器的梯度
+        # stu_fpn_feat = [fpn_feat for fpn_feat in student_logits[4]]
         roi_losses = student.roi_head.forward_train(stu_fpn_feat, nms_labels_list, all_proposal_list, nms_bboxes_list, nms_labels_list)
         # 2.组织微调模块的损失
         loss_bbox_refine_unsup, loss_cls_refine_unsup, acc_unsup = roi_losses['loss_bbox'], roi_losses['loss_cls'], roi_losses['acc']
 
         '''只推理部分(这部分的微调结果给一阶段网络学习)'''
-        # 1.送入refine head微调
+        # 1.送入refine head微调(其实相当于一个二阶段检测器的检测头)
         batch_res_bboxes, batch_res_labels = [], []
         if len(nms_bboxes_list)!=0:
             with torch.no_grad():
@@ -242,12 +222,7 @@ class RotatedDTBLLoss(nn.Module):
         sup_losses, _, _, _, _, _, = student.bbox_head.loss(student_logits[0], student_logits[1], student_logits[2], student_logits[3], batch_res_bboxes, batch_res_labels,  None, None)
         # 获取对应损失
         denoise_cls_loss, denoise_cnt_loss, denoise_box_loss = sup_losses['loss_cls'], sup_losses['loss_centerness'], sup_losses['loss_bbox']
-        # 防止报错 AssertionError: loss log variables are different across GPUs! (多卡训练时不同gpu损失的梯度类型不一样): <MulBackward0> <SumBackward0>
-        if (denoise_box_loss == 0.0):
-            print(f'denoise_box_loss_info: {denoise_box_loss} {batch_res_bboxes[0].shape} {student_logits[1][0].shape}, {batch_res_bboxes}, {batch_res_labels}')
-            denoise_box_loss = torch.tensor(0., device=denoise_box_loss.device)
-
-
+        
 
 
 
@@ -262,8 +237,8 @@ class RotatedDTBLLoss(nn.Module):
             pos_mask, neg_mask, weight_mask, fg_num, S_dps = self.pseudoLabelSelection(mode, teacher_logits, t_cls_scores, t_bbox_preds, t_centernesses, k, beta, refine_t_joint_score)
 
         '''损失'''
-        # 无监督分类损失 (without ignore region)
-        loss_cls = QFLv2(
+        # 无监督分类损失QFLv2 (without ignore region)
+        loss_cls = self.QFLv2(
             s_cls_scores.sigmoid(),
             t_cls_scores.sigmoid(),
             weight=pos_mask,
@@ -308,7 +283,7 @@ class RotatedDTBLLoss(nn.Module):
 
         # 总损失采用字典形式组织
         unsup_losses = dict(
-            # 无监督dense损失
+            # 无监督dense损失(denseteacher)
             loss_cls=unsup_loss_cls,
             loss_bbox=unsup_loss_bbox,
             loss_centerness=unsup_loss_centerness,
@@ -322,12 +297,13 @@ class RotatedDTBLLoss(nn.Module):
             loss_cls_refine = loss_cls_refine_unsup, 
             acc = acc_unsup,
 
-            # 无监督多对一损失
+            # 无监督多对一sparse损失(roi-head)
             loss_denoise_box=denoise_box_loss,
             # loss_denoise_cls=denoise_cls_loss,
             # loss_denoise_cnt=denoise_cnt_loss,
         )
-        return unsup_losses
+        # print(unsup_losses)
+        return unsup_losses, weight_mask
 
 
 
@@ -338,18 +314,11 @@ class RotatedDTBLLoss(nn.Module):
     def decode_and_grouping(self, teacher_logits, t_bbox_preds, t_cls_scores, t_centernesses, img_metas):
         '''decode + nms + 分组
             Args: 
-                batch_gt_bboxes:     gt或pgt  List([keep_num], ,..., [...])  
-                batch_group_iou:     每个dense bbox 与匹配gt或pgt的IoU            List([keep_num], ,..., [...])  
-                batch_group_id_mask: 每个dense bbox 所属的group(与gt的id对应)     List([keep_num], ,..., [...])  
-                batch_dense_bboxes:  score阈值筛选与grouping IoU筛选后保留的dense bboxes List([keep_num, 7], ,..., [...])  
-                format_data:         图像信息
-                root_dir:            可视化结果保存路径
 
             Returns:
                 None
         '''
         # 1. 获得grid网格点坐标
-        # print([featmap.size()[-2:] for featmap in teacher_logits[0]])
         all_level_points = self.prior_generator.grid_priors(
             [[128, 128], [64,64], [32,32], [16,16], [8,8]],
             dtype=t_bbox_preds.dtype,
@@ -370,7 +339,7 @@ class RotatedDTBLLoss(nn.Module):
         t_results = torch.cat([t_bbox_preds, t_joint_score.reshape(-1, 1), t_pred_labels.reshape(-1, 1)], dim=1)
 
         '''nms+分组'''
-        # nms:
+        # nms(至少会保留一个置信度最大的pgt):
         batch_nms_bboxes, batch_nms_labels = batch_nms(t_results.unsqueeze(0), t_cls_scores.unsqueeze(0))
         # 根据nms结果进行分组:
         batch_group_iou, batch_group_id_mask, batch_keep_dense_bboxes = batch_grouping_by_gts(t_results.unsqueeze(0), batch_nms_bboxes, iou_thres=0.3, score_thres=1e-6)
@@ -416,34 +385,3 @@ def wbf_aggregating(group_ids_mask, prenms_bboxes, pbox_nums):
 
 
 
-
-
-
-
-def QFLv2(pred_sigmoid, teacher_sigmoid, weight=None, beta=2.0, reduction='mean'):
-    # all goes to 0
-    pt = pred_sigmoid
-    zerolabel = pt.new_zeros(pt.shape)
-    # 一开始假设所有样本都是负样本, 因此实际上有对负样本计算损失, 对应的标签是全0
-    loss = F.binary_cross_entropy(pred_sigmoid, zerolabel, reduction='none') * pt.pow(beta)
-    # positive goes to bbox quality
-
-    # 这句话有时候会报错, 不知道为啥(内容如下):
-    # ... ...
-    # ../aten/src/ATen/native/cuda/Loss.cu:92: operator(): block: [79,0,0], thread: [118,0,0] Assertion `input_val >= zero && input_val <= one` failed.
-    # RuntimeError: numel: integer multiplication overflow 
-    try:
-        pt = teacher_sigmoid[weight] - pred_sigmoid[weight]
-    except:
-        print(weight.shape, teacher_sigmoid.shape)
-        print(torch.isnan(weight).any(), torch.isnan(teacher_sigmoid).any(), torch.isnan(pred_sigmoid).any())
-        pt = teacher_sigmoid[weight] - pred_sigmoid[weight]
-        
-    # 在所有样本都是负样本的基础上更新那些正样本对应位置为正样本损失(当teacher_sigmoid足够低时,也相当于计算负样本损失)
-    loss[weight] = F.binary_cross_entropy(pred_sigmoid[weight], teacher_sigmoid[weight], reduction='none') * pt.pow(beta)
-
-    if reduction == "mean":
-        loss = loss.mean()
-    elif reduction == "sum":
-        loss = loss.sum()
-    return loss

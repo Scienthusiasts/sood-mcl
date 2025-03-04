@@ -44,6 +44,7 @@ class ORCNNRoIHead(RotatedStandardRoIHead):
                 'filename', 'ori_shape', 'pad_shape', and 'img_norm_cfg'.
                 For details on the values of these keys see
                 `mmdet/datasets/pipelines/formatting.py:Collect`.
+            # yan:这里 proposals本来是[total_anchor_num, 5=(cx, cy, w, h, θ)] 改成 [total_anchor_num, 6=(cx, cy, w, h, θ, joint_score)]
             proposals (list[Tensors]): list of region proposals.
             gt_bboxes (list[Tensor]): Ground truth bboxes for each image with
                 shape (num_gts, 5) in [cx, cy, w, h, a] format.
@@ -63,6 +64,7 @@ class ORCNNRoIHead(RotatedStandardRoIHead):
             num_imgs = len(img_metas)
             if gt_bboxes_ignore is None:
                 gt_bboxes_ignore = [None for _ in range(num_imgs)]
+            '''官方的正负样本采样 + 分配'''
             sampling_results = []
             for i in range(num_imgs):
                 assign_result = self.bbox_assigner.assign(
@@ -82,6 +84,11 @@ class ORCNNRoIHead(RotatedStandardRoIHead):
                     sampling_result.pos_gt_bboxes = \
                         gt_bboxes[i][sampling_result.pos_assigned_gt_inds, :]
 
+                    # gt_w_score = torch.cat([gt_bboxes[i], torch.ones((gt_bboxes[i].shape[0], 1), device=gt_bboxes[i].device)], dim=1)
+                    # gt_proposals = torch.cat([gt_w_score, proposal_list[i]], dim=0)
+                    # sampling_result.pos_bboxes = gt_proposals[sampling_result.pos_inds]
+                    # print(sampling_result.bboxes)
+                    
                 sampling_results.append(sampling_result)
 
         losses = dict()
@@ -111,9 +118,11 @@ class ORCNNRoIHead(RotatedStandardRoIHead):
         Returns:
             dict[str, Tensor]: a dictionary of bbox_results.
         """
+        # 返回rois的坐标(形状是(1024, 6), [batch_ind, cx, cy, w, h, a]), 没有分组信息:
+        # sampling_results 里可以得到分组信息, 但是每个gt分配到的样本数不一样, 且没有置信度信息
         rois = rbbox2roi([res.bboxes for res in sampling_results])
+        # 返回box_head已经推理出的结果 (bbox_results['cls_score'], bbox_results['bbox_pred'] 形状分别是[1024, 17]和[1024, 5])
         bbox_results = self._bbox_forward(x, rois)
-
         bbox_targets = self.bbox_head.get_targets(sampling_results, gt_bboxes,
                                                   gt_labels, self.train_cfg)
         loss_bbox = self.bbox_head.loss(bbox_results['cls_score'],
@@ -122,6 +131,29 @@ class ORCNNRoIHead(RotatedStandardRoIHead):
 
         bbox_results.update(loss_bbox=loss_bbox)
         return bbox_results
+
+
+    def _bbox_forward(self, x, rois):
+        # 这个函数本来是直接调用的父类, 现在需要修改
+        """Box head forward function used in both training and testing.
+
+        Args:
+            x (list[Tensor]): list of multi-level img features.
+            rois (list[Tensors]): list of region of interests.
+
+        Returns:
+            dict[str, Tensor]: a dictionary of bbox_results.
+        """
+        # 从特征中抠出roi
+        bbox_feats = self.bbox_roi_extractor(
+            x[:self.bbox_roi_extractor.num_inputs], rois)
+        if self.with_shared_head:
+            bbox_feats = self.shared_head(bbox_feats)
+        cls_score, bbox_pred = self.bbox_head(bbox_feats)
+        bbox_results = dict(
+            cls_score=cls_score, bbox_pred=bbox_pred, bbox_feats=bbox_feats)
+        return bbox_results
+    
 
     def simple_test_bboxes(self,
                            x,

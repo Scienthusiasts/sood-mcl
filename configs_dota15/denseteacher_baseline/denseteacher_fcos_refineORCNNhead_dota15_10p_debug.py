@@ -22,8 +22,8 @@ nc = 16
 # 伪标签筛选超参
 semi_loss = dict(type='RotatedDTBLLoss', cls_channels=nc, loss_type='origin', bbox_loss_type='l1', 
                  # 'topk', 'top_dps', 'catwise_top_dps', 'global_w', 'sla'
-                #  p_selection = dict(mode='global_w', k=0.01, beta=2.0),
-                 p_selection = dict(mode='sla', k=0.01, beta=1.0),
+                 p_selection = dict(mode='global_w', k=0.01, beta=2.0),
+                #  p_selection = dict(mode='sla', k=0.01, beta=1.0),
                  # 蒸馏超参数  'kld', 'l2', 'qflv2'
                  distill = dict(mode='l2', beta=1.0, loss_weight=1.0),
                  )
@@ -39,9 +39,11 @@ loss_cls=dict(type='QualityFocalLoss', use_sigmoid=True, beta=2.0, loss_weight=1
 # just for debug:
 burn_in_steps = 64
 # 是否导入权重
-load_from = 'log/dtbaseline/DOTA1.5/10per_denoise/sla/burn-in-12800_orcnn-head_all-refine-loss_box-O2M-loss_detach_GA/latest.pth'
+load_from = 'log/dtbaseline/DOTA1.5/10per_denoise/global-w/joint-score-beta-2.0_burn-in-12800_orcnn-head_all-refine-loss_box-O2M-loss_detach_GA/latest.pth'
+# load_from = 'log/dtbaseline/DOTA1.5/10per_denoise/global-w/joint-score-beta-2.0_burn-in-12800_orcnn-head_all-refine-loss_box-O2M-loss_detach_GA_7_ssloss-nocls-w1.0_3/latest.pth'
+# load_from = 'log/dtbaseline/DOTA1.5/10per_denoise/global-w/joint-score-beta-2.0_burn-in-12800_orcnn-head_all-refine-loss_box-O2M-loss_detach_GA_7_ssloss-nocnt-w1.0/latest.pth'
 # load_from = None
-
+dist_params = dict(backend='nccl')
 
 
 
@@ -245,7 +247,6 @@ unsup_pipeline = [
 sup_pipeline = [
     dict(type='LoadImageFromFile'),
     dict(type='LoadAnnotations', with_bbox=True),
-    # dict(type='mmdet.CachedMosaic', img_scale=(1024, 1024), pad_val=114.0),
     dict(type='RResize', img_scale=(1024, 1024)),
     dict(
         type='RRandomFlip',
@@ -371,7 +372,6 @@ log_config = dict(
     ],
 )
 
-dist_params = dict(backend='nccl')
 log_level = 'INFO'
 resume_from = None
 workflow = [('train', 1)]   # mode, iters
