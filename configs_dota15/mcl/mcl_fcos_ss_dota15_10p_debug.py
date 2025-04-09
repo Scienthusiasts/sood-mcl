@@ -2,10 +2,9 @@ import torchvision.transforms as transforms
 from copy import deepcopy
 
 
-
-# DOTA数据集版本(1.0 or 1.5)
+angle_version = 'le90'
 version = 1.5
-# 数据集路径
+# 数据集路径:
 train_sup_image_dir =   f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train_10per/{version}/labeled/images/'
 train_sup_label_dir =   f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train_10per/{version}/labeled/annfiles/'
 train_unsup_image_dir = f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train_10per/{version}/unlabeled/images/'
@@ -14,55 +13,15 @@ val_image_dir =         f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/val/i
 val_label_dir =         f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/val/{version}/annfiles'
 test_image_dir =        f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/test/images'
 
-
-# full:
-# train_sup_image_dir =   f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train/images/'
-# train_sup_label_dir =   f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train/{version}/annfiles/'
-
-
 # 类别数
 nc = 16
-# 伪标签筛选超参
-semi_loss = dict(type='RotatedDTBLLoss', cls_channels=nc, loss_type='origin', bbox_loss_type='l1', 
-                 # 'topk', 'top_dps', 'catwise_top_dps', 'global_w', 'sla'
-                 p_selection = dict(mode='global_w', k=0.01, beta=2.0),
-                # p_selection = dict(mode='sla', k=0.01, beta=1.0),
-                 # 蒸馏超参数  'kld', 'l2', 'qflv2'
-                 distill = dict(mode='l2', beta=1.0, loss_weight=1.0),
-                 )
-# prototype原型
-prototype = dict(cat_nums=nc, mode='ema', loss_weight = 1.)
-# 无监督分支权重
-unsup_loss_weight = 1.0
-# just for debug:
-burn_in_steps = 64
-# 是否使用高斯椭圆标签分配 (注意GA分配得搭配QualityFocalLoss)
-bbox_head_type = 'SemiRotatedBLFCOSGAHead'
-loss_cls=dict(type='QualityFocalLoss', use_sigmoid=True, beta=2.0, loss_weight=1.0, activated=True)
-# bbox_head_type = 'SemiRotatedBLFCOSHead'
-# loss_cls=dict(type='FocalLoss', use_sigmoid=True, gamma=2.0, alpha=0.25, loss_weight=1.0)
-
-load_from = 'log/dtbaseline/DOTA1.5/10per_denoise/global-w/joint-score-beta-2.0_burn-in-12800_GA/latest.pth'
-# load_from = 'log/dtbaseline/DOTA1.5/10per_global-w_prototype-only-update/w1.0-bgd-truenormema-w-unsup_joint-score-beta-2.0_burn-in-12800/latest.pth'
-# load_from = 'log/dtbaseline/DOTA1.5/10per_global-w_prototype/w1.0-bgd-truenormema-w-unsup-only-update_joint-score-beta-2.0_burn-in-12800/iter_38400.pth'
-# load_from = None
+load_from = '/data/yht/code/sood-mcl/log/mcl/DOTA1.5/10per/latest.pth'
+burn_in_steps = 50
 
 
-
-
-
-
-
-
-
-
-
-
-
-angle_version = 'le90'
 # model settings
 detector = dict(
-    type='SemiRotatedBLFCOS',
+    type='SemiRotatedFCOS',
     backbone=dict(
         type='ResNet',
         depth=50,
@@ -83,21 +42,25 @@ detector = dict(
         num_outs=5,
         relu_before_extra_convs=True),
     bbox_head=dict(
-        type=bbox_head_type,
+        type='SemiRotatedFCOSHeadMCL',
         num_classes=nc,
         in_channels=256,
         stacked_convs=4,
         feat_channels=256,
         strides=[8, 16, 32, 64, 128],
-        center_sampling=True,
-        center_sample_radius=1.5,
         norm_on_bbox=True,
         centerness_on_reg=True,
         separate_angle=False,
         scale_angle=True,
+        beta=0.2,
         bbox_coder=dict(
             type='DistanceAnglePointCoder', angle_version=angle_version),
-        loss_cls=loss_cls,
+        loss_cls=dict(
+            type='QualityFocalLoss',
+            use_sigmoid=True,
+            beta=2.0,
+            loss_weight=1.0,
+            activated=True),
         loss_bbox=dict(type='RotatedIoULoss', loss_weight=1.0),
         loss_centerness=dict(
             type='CrossEntropyLoss', use_sigmoid=True, loss_weight=1.0)),
@@ -111,20 +74,19 @@ detector = dict(
         max_per_img=2000))
 
 model = dict(
-    type="RotatedDTBaseline",
+    type="MCLTeacherSS",
     model=detector,
-    # newly added
-    prototype=prototype,
-    semi_loss=semi_loss,
+    nc=nc,
+    semi_loss=dict(type='RotatedMCLLoss', cls_channels=16),
     train_cfg=dict(
         iter_count=0,
         burn_in_steps=burn_in_steps,
         sup_weight=1.0,
-        unsup_weight=unsup_loss_weight,
+        unsup_weight=1.0,
         weight_suppress="linear",
         logit_specific_weights=dict(),
     ),
-    test_cfg=dict(inference_on="teacher"),
+    test_cfg=dict(inference_on="teacher"), 
 )
 
 img_norm_cfg = dict(
@@ -135,8 +97,8 @@ common_pipeline = [
     dict(type='DefaultFormatBundle'),
     dict(type='Collect', keys=['img', 'gt_bboxes', 'gt_labels'],
          meta_keys=('filename', 'ori_filename', 'ori_shape',
-                    'img_shape', 'pad_shape', 'scale_factor', 'flip', 'flip_direction', 
-                    'img_norm_cfg', 'tag')
+                    'img_shape', 'pad_shape', 'scale_factor', 'flip',
+                    'flip_direction', 'img_norm_cfg', 'tag')
          )
 ]
 strong_pipeline = [
@@ -203,11 +165,12 @@ test_pipeline = [
         ])
 ]
 
-dataset_type = 'DOTADataset'  
+dataset_type = 'DOTADataset' 
 classes = ('plane', 'baseball-diamond', 'bridge', 'ground-track-field',
            'small-vehicle', 'large-vehicle', 'ship', 'tennis-court',
            'basketball-court', 'storage-tank', 'soccer-ball-field',
-           'roundabout', 'harbor', 'swimming-pool', 'helicopter', 'container-crane')
+           'roundabout', 'harbor', 'swimming-pool', 'helicopter',
+           'container-crane')
 data = dict(
     samples_per_gpu=3,
     workers_per_gpu=5,
@@ -285,7 +248,6 @@ log_config = dict(
     interval=50,
     hooks=[
         dict(type="TextLoggerHook"),
-        dict(type='TensorboardLoggerHook'),
         # dict(
         #     type="WandbLoggerHook",
         #     init_kwargs=dict(
@@ -306,3 +268,14 @@ workflow = [('train', 1)]   # mode, iters
 opencv_num_threads = 0
 # set multi-process start method as `fork` to speed up the training
 mp_start_method = 'fork'
+
+
+
+
+
+
+test_evaluator = dict(
+    type='DOTAMetric',
+    format_only=True,
+    merge_patches=True,
+    outfile_prefix='./Task1')

@@ -459,6 +459,8 @@ class RotatedFCOSHead(RotatedAnchorFreeHead):
 
         return labels, bbox_targets, angle_targets
 
+
+
     def centerness_target(self, pos_bbox_targets):
         """Compute centerness targets.
 

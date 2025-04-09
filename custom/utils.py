@@ -1,14 +1,34 @@
 import torch
+import torch.nn as nn
 import numpy as np
 import cv2
-import os
 from mmrotate.core import rbbox2result, poly2obb_np, obb2poly, poly2obb, build_bbox_coder, obb2xyxy
 from mmdet.core.anchor.point_generator import MlvlPointGenerator
 from mmrotate.core import build_bbox_coder, multiclass_nms_rotated
 from mmcv.ops import box_iou_quadri, box_iou_rotated
 from torchvision.transforms.functional import rotate, pad
-import torch.nn.functional as F
 import random
+
+
+
+
+
+def init_weights(model, init_type, mean=0, std=0.01):
+    '''权重初始化方法
+    '''
+    for module in model.modules():
+        if isinstance(module, (nn.Conv2d, nn.Linear)):
+            if init_type=='he':
+                nn.init.kaiming_normal_(module.weight, mode='fan_out', nonlinearity='relu')
+            if init_type=='normal':
+                nn.init.normal_(module.weight, mean=mean, std=std)  # 使用高斯随机初始化
+            if module.bias is not None:
+                nn.init.constant_(module.bias, 0)
+        elif isinstance(module, nn.BatchNorm2d):
+            nn.init.constant_(module.weight, 1)
+            nn.init.constant_(module.bias, 0)
+
+
 
 
 
@@ -60,27 +80,30 @@ def convert_shape_single(logits, dim, bs_dim=True):
     return reshape_logits
 
 
-def convert_shape(logits, nc, wo_cls_score=False):
+def convert_shape(logits, nc, wo_cls_score=False, fpn=True):
     '''将模型输出logit reshape
     '''
-    cls_scores, bbox_preds, angle_preds, centernesses, fpn_feat = logits
+    if fpn:
+        cls_scores, bbox_preds, angle_preds, centernesses, fpn_feat = logits
+    else:
+        cls_scores, bbox_preds, angle_preds, centernesses = logits
     bs = bbox_preds[0].shape[0]
     # wo_cls_score=True时表示cls_scores已经是prototype refine过的
     if wo_cls_score==False:
-        assert len(cls_scores) == len(bbox_preds) == len(angle_preds) == len(centernesses) == len(fpn_feat)
         # [[bs, cat_num, h1, w1], ...[bs, cat_num, h5, w5]] -> [total_grid_num, cat_num]
         cls_scores = convert_shape_single(cls_scores, nc)
-    else:
-        assert len(bbox_preds) == len(angle_preds) == len(centernesses) == len(fpn_feat)
 
     # [[bs, 4+1, h1, w1], ...[bs, 4+1, h5, w5]] -> [total_grid_num, 5] box是坐标和角度拼在一起
     bbox_preds = [torch.cat([x, y], dim=1).permute(0, 2, 3, 1).reshape(bs, -1, 5) for x, y in zip(bbox_preds, angle_preds)]
     bbox_preds = torch.cat(bbox_preds, dim=1).view(-1, 5)
     # [[bs, 1, h1, w1], ...[bs, 1, h5, w5]] -> [total_grid_num, 1]
     centernesses = convert_shape_single(centernesses, 1)
-    # [[bs, 256, h1, w1], ...[bs, 256, h5, w5]] -> [total_grid_num, 256]
-    fpn_feat = convert_shape_single(fpn_feat, 256)
-    return [cls_scores, bbox_preds, centernesses, fpn_feat], bs
+    if fpn:
+        # [[bs, 256, h1, w1], ...[bs, 256, h5, w5]] -> [total_grid_num, 256]
+        fpn_feat = convert_shape_single(fpn_feat, 256)
+        return [cls_scores, bbox_preds, centernesses, fpn_feat], bs
+    else:
+        return [cls_scores, bbox_preds, centernesses], bs
 
 
 
@@ -113,73 +136,130 @@ def rbox2PolyNP(obboxes):
 
 
 
-def batch_nms(t_results, t_cls_scores):
+
+
+
+def batch_nms(bboxes, cls_scores, centerness, score_thr=0.2):
     '''rotated nms
         Args:
-            t_results:      dense preds, [bs, total_anchor_num, 7=(cx, cy, w, h, θ, score, label)]
-            t_cls_scores:   [bs, total_anchor_num, cls_num]
+            bboxes:     dense preds, [bs, total_anchor_num, 7=(cx, cy, w, h, θ, score, label)]
+            cls_scores: [bs, total_anchor_num, cls_num] (已经过sigmoid)
+            centerness: [bs, total_anchor_num] (已经过sigmoid)
+            score_thr:  NMS置信度阈值
 
         Returns:
-            det_bboxes:      [post_nms_num, 6=(cx, cy, w, h, θ, score)]
-            det_labels:      [post_nms_num]
+            batch_det_bboxes: list([post_nms_num, 6=(cx, cy, w, h, θ, score)], ..., [...])
+            batch_det_labels: list([post_nms_num], [...])
+            batch_det_scores: list([post_nms_num, cls_num], [...])
     '''
-    batch_det_bboxes, batch_det_labels = [], []
-    for i in range(t_results.shape[0]):
+    nc = cls_scores[0].shape[-1]
+    batch_det_bboxes, batch_det_labels, batch_det_scores = [], [], []
+    # 对batch每张图片分别nms
+    for i in range(bboxes.shape[0]):
+        # multiclass_nms_rotated的输入需要包含背景类预测
+        padding = cls_scores[i].new_zeros(cls_scores[i].shape[0], 1)
+        cls_scores_w_bg = torch.cat([cls_scores[i], padding], dim=1)
         '''nms'''
         # 输入: [total_box_num, 5], [total_box_num, 16] -> 输出: [nms_num, 6], [nms_num]
-        det_bboxes, det_labels = multiclass_nms_rotated(
-            multi_bboxes=t_results[i, :, :5],            # [total_box_num, 5]
-            multi_scores=t_cls_scores[i],                # [total_box_num, 16]
+        det_bboxes, det_labels, thr_idx, nms_idx = multiclass_nms_rotated(
+            multi_bboxes=bboxes[i, :, :5],            # [total_box_num, 5]
+            multi_scores=cls_scores_w_bg,                # [total_box_num, 16]
             score_thr=0.2,                               # 0.05
             nms={'iou_thr': 0.1},                        # {'iou_thr': 0.1}
             max_num=2000,                                # 2000
-            score_factors=t_results[i, :, 5]             # [total_box_num]
+            score_factors=centerness[i, :],            # centerness[i, :] bboxes[i, :, 5]
+            return_inds=True
             )
         # 保证每张图片一定会有一个pgt(置信度最大的那个)(否则微调模块不好搞定)
         if det_bboxes.shape[0]==0: 
-            max_idx = torch.argmax(t_results[i, :, 5])
-            det_bboxes = t_results[i, max_idx,:6].unsqueeze(0)
-            det_labels = t_results[i, max_idx,-1].unsqueeze(0).long()
+            max_idx = torch.argmax(bboxes[i, :, 5])
+            det_bboxes = bboxes[i, max_idx,:6].unsqueeze(0)
+            det_labels = bboxes[i, max_idx,-1].unsqueeze(0).long()
+            det_scores = cls_scores[i, max_idx, :].unsqueeze(0)
+        else:
+            # 为什么索引是thr_idx // nc, 因为这个索引基于把所有类别都展平成1维了，需要除以类别数才是正确的索引
+            det_scores = cls_scores[i][thr_idx // nc][nms_idx]
 
         batch_det_bboxes.append(det_bboxes)
         batch_det_labels.append(det_labels)
+        batch_det_scores.append(det_scores)
+        # 检查索引是否正确(不对会报越界的cuda error):
+        # batch_det_bboxes.append(bboxes[i][thr_idx // nc][nms_idx])
+        # batch_det_labels.append(torch.argmax(cls_scores[i][thr_idx // nc][nms_idx],dim=1))
 
-    return batch_det_bboxes, batch_det_labels
+    return batch_det_bboxes, batch_det_labels, batch_det_scores
 
 
 
 
 
-def batch_grouping_by_gts(dense_bboxes, gt_bboxes, iou_thres=0.1, score_thres=1e-5):
+def batch_grouping_by_nmsboxes(dense_bboxes, nms_bboxes, nms_scores, iou_thres=0.1, score_thres=1e-5, K=8, oversampling_ratio=1.0):
     '''根据pgt或GT对dense的预测结果进行分组聚类(指标:RIoU,是否还应该考虑类别?)
         Args:
             dense_bboxes: [bs, total_anchor_num, 7=(cx, cy, w, h, θ, score, label)]
-            gt_bboxes:    List([post_nms_num, 5], ..., [...])
+            nms_bboxes:   list([post_nms_num, 6=(cx, cy, w, h, θ, score)], ..., [...])
+            nms_scores:   list([post_nms_num, cls_num], [...]) (已经过sigmoid)
             iou_thres:    group里的框与gt框的最小IoU
             score_thres:  group里的框的置信度最小值
 
         Returns:
-            batch_group_iou:         每个dense bbox 与匹配gt或pgt的IoU            List([keep_num], ,..., [...])     
-            batch_group_id_mask:     每个dense bbox 所属的group(与gt的id对应)     List([keep_num], ,..., [...])  
-            batch_keep_dense_bboxes: score阈值筛选与grouping IoU筛选后保留的dense bboxes List([keep_num, 7], ,..., [...])  
+            batch_group_iou:         每个dense bbox 与匹配gt或pgt的IoU    List([keep_num], ,..., [...])     
+            batch_keep_dense_bboxes: score阈值筛选与grouping IoU筛选后保留的dense bboxes的初始信息(坐标, 得分, 所属类别)([keep_num, 7], ,..., [...])  
+            nms_bboxes:              更新后的nms_bboxes, 去除了那些group数量=0的nms_bbox
+            nms_scores:              更新后的nms_scores, 去除了那些group数量=0的nms_scores
     '''
     # 遍历batch每张图像的预测结果:
-    batch_group_iou, batch_group_id_mask, batch_keep_dense_bboxes = [], [], []
+    batch_groups_iou,  batch_groups_bboxes = [], []
     for i in range(dense_bboxes.shape[0]):
-        # 采用联合置信度卡正样本(不满足的样本不参与聚类, 减少计算量)
+        # 先采用一个很小的联合置信度阈值卡正样本(不满足的样本不参与聚类, 减少计算量)
         pos_mask = dense_bboxes[i, :, 5] > score_thres
-        # dense样本和gt计算riou [pre_nms_num, post_nms_num], 得到pre_nms和post_nms的框的两两IoU
-        riou = box_iou_rotated(dense_bboxes[i, :, :5][pos_mask], gt_bboxes[i][:, :5])
-        # 每个pre_nms属于与最大IoU的post_nms的框的那一组
-        group_iou, group_ids_mask = riou.max(dim=1)
-        # 再次过滤掉iou小于阈值的框
-        fgd_mask = group_iou > iou_thres
-        # [pre_nms_num], [pre_nms_num], [pre_nms_num, 6]
-        group_iou, group_id_mask, keep_dense_bboxes = group_iou[fgd_mask], group_ids_mask[fgd_mask], dense_bboxes[i, pos_mask, :][fgd_mask]
-        batch_group_iou.append(group_iou)
-        batch_group_id_mask.append(group_id_mask)
-        batch_keep_dense_bboxes.append(keep_dense_bboxes)
-    return batch_group_iou, batch_group_id_mask, batch_keep_dense_bboxes
+        # [FIX] 首先获取筛选后的dense_bboxes
+        dense_bboxes_pos = dense_bboxes[i][pos_mask]  # [pos_num, 7]
+        
+        # 每个dense样本和所有gt计算riou [pre_nms_num, post_nms_num], 得到pre_nms和post_nms的框的两两IoU
+        riou = box_iou_rotated(dense_bboxes_pos[:, :5], nms_bboxes[i][:, :5])
+        # 每个dense box属于与最大IoU的post_nms的框的那一组
+        group_ious, group_ids_mask = riou.max(dim=1)
+        # 那些最大IoU小于阈值的dense box也得舍弃
+        group_ids_mask[group_ious<iou_thres]=-1
+
+        # 对齐每个group里box的个数
+        keep_gt_bboxes_id = []
+        groups_iou, groups_bboxes = [], []
+        for group_id in range(nms_bboxes[i].shape[0]):
+            # 找到属于当前group的所有框
+            mask = group_ids_mask == group_id
+            # 还需要考虑变成NMSBox的GTBox又没有其他densebox和它一个group的情况:
+            if (mask.sum()==0 and nms_bboxes[i][group_id, 5]>=0.99):
+                group_iou = torch.tensor([1.0], device=dense_bboxes.device)
+                gt_label = torch.argmax(nms_scores[i][group_id])
+                gt_box = nms_bboxes[i][group_id]
+                group_dense_bboxes = torch.tensor([[gt_box[0], gt_box[1], gt_box[2], gt_box[3], gt_box[4], gt_box[5], gt_label]], device=dense_bboxes.device)
+            elif (mask.sum()!=0):
+                # [FIX] 使用筛选后的dense_bboxes_pos而不是原始dense_bboxes[i]
+                group_iou = group_ious[mask]
+                group_dense_bboxes = dense_bboxes_pos[mask]  # 关键修改点
+            
+            if (mask.sum()!=0 or nms_bboxes[i][group_id, 5]>=0.99):
+                # 选择iou前topk(k=8)的那些框
+                k = min(K, group_iou.shape[0])
+                _, idx = torch.topk(group_iou, k)
+                # 如果group里样本数量不足k个, 则在group里随机采样进行padding
+                if(k<K):
+                    sampled_idx = torch.randint(low=0, high=idx.shape[0], size=(K-k,))
+                    padded_idx = idx[sampled_idx]
+                    idx = torch.cat([idx, padded_idx])
+
+                groups_iou.append(group_iou[idx])
+                # TODO:对额外随机采样的Box进行加噪(因为和其他box是重复的)?
+                groups_bboxes.append(group_dense_bboxes[idx])
+                keep_gt_bboxes_id.append(group_id)
+        
+        nms_bboxes[i] = nms_bboxes[i][keep_gt_bboxes_id]
+        nms_scores[i] = nms_scores[i][keep_gt_bboxes_id]
+        batch_groups_iou.append(torch.stack(groups_iou))
+        batch_groups_bboxes.append(torch.stack(groups_bboxes))
+    return batch_groups_iou, batch_groups_bboxes, nms_bboxes, nms_scores
 
 
 
@@ -250,3 +330,8 @@ def pad_tensor(tensor, k, fill='reflect'):
     padded_tensor = pad(tensor, (padding_left, padding_right, padding_top, padding_bottom), padding_mode=fill)
     pad_len = [padding_top, padding_left, padding_bottom, padding_right]
     return padded_tensor, pad_len
+
+
+
+
+

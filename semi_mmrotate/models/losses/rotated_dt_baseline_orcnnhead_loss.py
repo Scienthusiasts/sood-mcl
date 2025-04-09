@@ -31,9 +31,9 @@ CLASSES = ('large-vehicle', 'swimming-pool', 'helicopter', 'bridge', 'plane',
 
 
 @ROTATED_LOSSES.register_module()
-class RotatedDTBLLoss(nn.Module):
+class RotatedDTBLORCNNHeadLoss(nn.Module):
     def __init__(self, p_selection:dict, distill:dict, cls_channels=16, loss_type='origin', bbox_loss_type='l1'):
-        super(RotatedDTBLLoss, self).__init__()
+        super(RotatedDTBLORCNNHeadLoss, self).__init__()
         self.cls_channels = cls_channels
         assert bbox_loss_type in ['l1', 'iou']
         self.bbox_loss_type = bbox_loss_type
@@ -167,62 +167,80 @@ class RotatedDTBLLoss(nn.Module):
         s_cls_scores, s_bbox_preds, s_centernesses, _ = reshape_s_logits
         refine_t_joint_score = teacher_logits[-1]
 
-        '''多对一匹配进行伪标签学习'''
+
+
+
+
+
+        """多对一匹配进行伪标签学习"""
         # 0.decode + nms + 分组
         # NOTE:注意这里传参共享内存, 所以得.clone()
-        nms_bboxes, nms_labels, group_iou, group_id_mask, keep_dense_bboxes, all_bboxes = self.decode_and_grouping(teacher_logits, t_bbox_preds.clone(), t_cls_scores.sigmoid(), t_centernesses.sigmoid(),  stu_img_metas)
+        t_nms_bboxes, t_nms_labels, t_all_bboxes = self.decode_and_nms(t_bbox_preds.clone(), t_cls_scores.sigmoid(), t_centernesses.sigmoid())
         # 调整格式(注意, 这里的proposal_list拿的就是分组之后的框而不是所有的框了)
         # TODO: 存在的问题:分组的框依然会存在漏检的问题
         # proposal_list本来只包括坐标, 现在连score也加进去:
-        all_proposal_list = [all_bboxes[:, :6]] if nms_bboxes.shape[0]!=0 else []
-        proposal_list = [keep_dense_bboxes[:, :6]] if nms_bboxes.shape[0]!=0 else []
-        nms_bboxes_list = [nms_bboxes[:, :5]] if nms_bboxes.shape[0]!=0 else []
-        nms_labels_list = [nms_labels] if nms_bboxes.shape[0]!=0 else []
+        all_t_proposal_list = [t_all_bboxes[:, :6]] if t_nms_bboxes.shape[0]!=0 else []
+        nms_t_bboxes_list = [t_nms_bboxes[:, :5]] if t_nms_bboxes.shape[0]!=0 else []
+        nms_t_labels_list = [t_nms_labels] if t_nms_bboxes.shape[0]!=0 else []
 
-        '''无监督部分训练refine head(GT为Teacher经过nms后的结果)'''
-        # 1.送入roi head进行微调(其实相当于一个二阶段检测器的检测头)
-        # TODO: 有一个问题, 调用forward_train函数时, 会再执行一次正负样本分配而不是采用已经分好的组
-        # [[bs, 256, h1, w1], ...], [[roi_nums, 5], ...], [[gt_nums], ...], [[gt_nums, 5], ...]
-        # 注意 roi_head.forward_train接受的回归框坐标的格式是[cx, cy, w, h, a]
-        # NOTE:Ablation1: 断开refine-head与主体检测器的梯度
-        stu_fpn_feat = [fpn_feat.detach() for fpn_feat in student_logits[4]]
-        # NOTE:Ablation2: 维持refine-head与主体检测器的梯度
-        # stu_fpn_feat = [fpn_feat for fpn_feat in student_logits[4]]
-        roi_losses = student.roi_head.forward_train(stu_fpn_feat, nms_labels_list, all_proposal_list, nms_bboxes_list, nms_labels_list)
-        # 2.组织微调模块的损失
-        loss_bbox_refine_unsup, loss_cls_refine_unsup, acc_unsup = roi_losses['loss_bbox'], roi_losses['loss_cls'], roi_losses['acc']
 
-        '''只推理部分(这部分的微调结果给一阶段网络学习)'''
+        '''teacher roihead的微调结果给student一阶段网络学习'''
         # 1.送入refine head微调(其实相当于一个二阶段检测器的检测头)
-        batch_res_bboxes, batch_res_labels = [], []
-        if len(nms_bboxes_list)!=0:
+        batch_t_roihead_bboxes, batch_t_roihead_labels = [], []
+        if len(nms_t_bboxes_list)!=0:
             with torch.no_grad():
-                p = copy.deepcopy(nms_bboxes_list)
+                p = copy.deepcopy(nms_t_bboxes_list)
                 refine_bbox = teacher.roi_head.simple_test(teacher_logits[4], p, img_metas['img_metas'], rescale=True)
                 # 调整输出格式, 把所有类别下的预测结果拼在一起
                 for i in range(bs):
-                    res_bboxes, res_labels = [], []
+                    t_res_bboxes, t_res_labels = [], []
                     for cls_id in range(len(refine_bbox[i])):
                         if(len(refine_bbox[i][cls_id])!=0):
-                            res_bboxes.append(refine_bbox[i][cls_id])
-                            res_labels += [cls_id] * len(refine_bbox[i][cls_id])
+                            t_res_bboxes.append(refine_bbox[i][cls_id])
+                            t_res_labels += [cls_id] * len(refine_bbox[i][cls_id])
                     
-                    res_bboxes = torch.tensor(np.concatenate(res_bboxes, axis=0)[:, :5], device=nms_labels.device) if len(res_bboxes) > 0 else nms_bboxes[:, :5]
-                    res_labels = torch.tensor(res_labels, device=nms_labels.device) if len(res_labels) > 0 else nms_labels
-                    batch_res_bboxes.append(res_bboxes)
-                    batch_res_labels.append(res_labels)
-
-
+                    t_res_bboxes = torch.tensor(np.concatenate(t_res_bboxes, axis=0)[:, :5], device=t_nms_labels.device) if len(t_res_bboxes) > 0 else t_nms_bboxes[:, :5]
+                    t_res_labels = torch.tensor(t_res_labels, device=t_nms_labels.device) if len(t_res_labels) > 0 else t_nms_labels
+                    batch_t_roihead_bboxes.append(t_res_bboxes)
+                    batch_t_roihead_labels.append(t_res_labels)
 
         # 可视化(一般情况下注释)
         # vis_unsup_bboxes_batch(img_metas, bs, nms_bboxes_list, proposal_list, batch_res_bboxes, './vis_unsup_bboxes')
         # 2.送到head进行正负样本分配(nms后的结果作为gt) + 计算损失
         # cls_scores, bbox_preds, angle_preds, centernesses, _ = student_logits
-        # sup_losses, _, _, _, _, _, = student.bbox_head.loss(student_logits[0], student_logits[1], student_logits[2], student_logits[3], [nms_bboxes[:, :5]], [nms_labels],  None, None)
-        sup_losses, _, _, _, _, _, = student.bbox_head.loss(student_logits[0], student_logits[1], student_logits[2], student_logits[3], batch_res_bboxes, batch_res_labels,  None, None)
+        sup_losses, _, _, _, _, _, = student.bbox_head.loss(student_logits[0], student_logits[1], student_logits[2], student_logits[3], batch_t_roihead_bboxes, batch_t_roihead_labels,  None, None)
         # 获取对应损失
         denoise_cls_loss, denoise_cnt_loss, denoise_box_loss = sup_losses['loss_cls'], sup_losses['loss_centerness'], sup_losses['loss_bbox']
         
+
+        '''teacher roihead的微调结果给student roihead学习'''
+        # 1.送入roi head进行微调(其实相当于一个二阶段检测器的检测头)
+        # TODO: 有一个问题, 调用forward_train函数时, 会再执行一次正负样本分配(orcnnhead)
+        # [[bs, 256, h1, w1], ...], [[roi_nums, 5], ...], [[gt_nums], ...], [[gt_nums, 5], ...]
+
+        # NOTE:Ablation1: 断开refine-head与主体检测器的梯度
+        stu_fpn_feat = [fpn_feat.detach() for fpn_feat in student_logits[4]]
+        # NOTE:Ablation2: 维持refine-head与主体检测器的梯度
+        # stu_fpn_feat = [fpn_feat for fpn_feat in student_logits[4]]
+
+        roi_losses = student.roi_head.forward_train(stu_fpn_feat, batch_t_roihead_labels, all_t_proposal_list, batch_t_roihead_bboxes, batch_t_roihead_labels)
+        '''这里用all_s_proposal_list说明是s的proposal给s二阶段头做微调训练'''
+        # # decode + nms + 分组;         NOTE:注意这里传参共享内存, 所以得.clone()
+        # s_nms_bboxes, s_nms_labels, s_all_bboxes = self.decode_and_nms(s_bbox_preds.clone(), s_cls_scores.sigmoid(), s_centernesses.sigmoid()) 
+        # # proposal_list本来只包括坐标, 现在连score也加进去:
+        # all_s_proposal_list = [s_all_bboxes[:, :6].detach()] if s_nms_bboxes.shape[0]!=0 else []
+        # # 注意 roi_head.forward_train接受的回归框坐标的格式是[cx, cy, w, h, a]
+        # roi_losses = student.roi_head.forward_train(stu_fpn_feat, batch_t_roihead_labels, all_s_proposal_list, batch_t_roihead_bboxes, batch_t_roihead_labels)
+        # 2.组织微调模块的损失
+        loss_bbox_refine_unsup, loss_cls_refine_unsup, acc_unsup = roi_losses['loss_bbox'], roi_losses['loss_cls'], roi_losses['acc']
+
+
+
+
+
+
+
+
 
 
 
@@ -311,8 +329,8 @@ class RotatedDTBLLoss(nn.Module):
 
 
 
-    def decode_and_grouping(self, teacher_logits, t_bbox_preds, t_cls_scores, t_centernesses, img_metas):
-        '''decode + nms + 分组
+    def decode_and_nms(self, t_bbox_preds, t_cls_scores, t_centernesses):
+        '''decode + nms
             Args: 
 
             Returns:
@@ -338,22 +356,13 @@ class RotatedDTBLLoss(nn.Module):
         # 把所有信息concat在一起 [total_anchor_num, 7=(cx, cy, w, h, θ, score, label)]
         t_results = torch.cat([t_bbox_preds, t_joint_score.reshape(-1, 1), t_pred_labels.reshape(-1, 1)], dim=1)
 
-        '''nms+分组'''
+        '''nms'''
         # nms(至少会保留一个置信度最大的pgt):
-        batch_nms_bboxes, batch_nms_labels = batch_nms(t_results.unsqueeze(0), t_cls_scores.unsqueeze(0))
-        # 根据nms结果进行分组:
-        batch_group_iou, batch_group_id_mask, batch_keep_dense_bboxes = batch_grouping_by_gts(t_results.unsqueeze(0), batch_nms_bboxes, iou_thres=0.3, score_thres=1e-6)
-        # 可视化分组结果(一般情况下注释)
-        # vis_grouping_batch(batch_nms_bboxes, batch_group_iou, batch_group_id_mask, batch_keep_dense_bboxes, img_metas, 'vis_unsup_grouping')
+        batch_nms_bboxes, batch_nms_labels, batch_nms_scores = batch_nms(t_results.unsqueeze(0), t_cls_scores.unsqueeze(0), t_joint_score.unsqueeze(0))
         # 这一步偷懒, 因为只有一个batch
-        group_iou, group_id_mask, keep_dense_bboxes, nms_bboxes, nms_labels = batch_group_iou[0], batch_group_id_mask[0], batch_keep_dense_bboxes[0], batch_nms_bboxes[0], batch_nms_labels[0]
+        nms_bboxes, nms_labels = batch_nms_bboxes[0], batch_nms_labels[0]
 
-        '''类似WBF的方法进行融合(TODO: 这部分应该要换成微调模块)'''
-        # if batch_nms_bboxes.shape[0]!=0:
-        #     # wbf_bboxes是5参表示法
-        #     wbf_bboxes = wbf_aggregating(group_id_mask, keep_dense_bboxes, batch_nms_bboxes[0].shape[0])
-
-        return nms_bboxes, nms_labels, group_iou, group_id_mask, keep_dense_bboxes, t_results
+        return nms_bboxes, nms_labels, t_results
 
 
 

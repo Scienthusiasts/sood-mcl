@@ -2,7 +2,7 @@ import torchvision.transforms as transforms
 from copy import deepcopy
 
 
-
+'''重要的参数写在前面:'''
 # DOTA数据集版本(1.0 or 1.5)
 version = 1.5
 # 数据集路径
@@ -14,19 +14,13 @@ val_image_dir =         f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/val/i
 val_label_dir =         f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/val/{version}/annfiles'
 test_image_dir =        f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/test/images'
 
-
-# full:
-# train_sup_image_dir =   f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train/images/'
-# train_sup_label_dir =   f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train/{version}/annfiles/'
-
-
 # 类别数
 nc = 16
 # 伪标签筛选超参
-semi_loss = dict(type='RotatedDTBLLoss', cls_channels=nc, loss_type='origin', bbox_loss_type='l1', 
+semi_loss = dict(type='RotatedDTBLORCNNHeadLoss', cls_channels=nc, loss_type='origin', bbox_loss_type='l1', 
                  # 'topk', 'top_dps', 'catwise_top_dps', 'global_w', 'sla'
                  p_selection = dict(mode='global_w', k=0.01, beta=2.0),
-                # p_selection = dict(mode='sla', k=0.01, beta=1.0),
+                #  p_selection = dict(mode='sla', k=0.01, beta=1.0),
                  # 蒸馏超参数  'kld', 'l2', 'qflv2'
                  distill = dict(mode='l2', beta=1.0, loss_weight=1.0),
                  )
@@ -34,22 +28,16 @@ semi_loss = dict(type='RotatedDTBLLoss', cls_channels=nc, loss_type='origin', bb
 prototype = dict(cat_nums=nc, mode='ema', loss_weight = 1.)
 # 无监督分支权重
 unsup_loss_weight = 1.0
-# just for debug:
-burn_in_steps = 64
 # 是否使用高斯椭圆标签分配 (注意GA分配得搭配QualityFocalLoss)
 bbox_head_type = 'SemiRotatedBLFCOSGAHead'
 loss_cls=dict(type='QualityFocalLoss', use_sigmoid=True, beta=2.0, loss_weight=1.0, activated=True)
 # bbox_head_type = 'SemiRotatedBLFCOSHead'
 # loss_cls=dict(type='FocalLoss', use_sigmoid=True, gamma=2.0, alpha=0.25, loss_weight=1.0)
-
-load_from = 'log/dtbaseline/DOTA1.5/10per_denoise/global-w/joint-score-beta-2.0_burn-in-12800_GA/latest.pth'
-# load_from = 'log/dtbaseline/DOTA1.5/10per_global-w_prototype-only-update/w1.0-bgd-truenormema-w-unsup_joint-score-beta-2.0_burn-in-12800/latest.pth'
-# load_from = 'log/dtbaseline/DOTA1.5/10per_global-w_prototype/w1.0-bgd-truenormema-w-unsup-only-update_joint-score-beta-2.0_burn-in-12800/iter_38400.pth'
-# load_from = None
-
-
-
-
+# burn_in_steps:
+burn_in_steps = 12800
+# 是否导入权重
+# load_from = 'log/dtbaseline/DOTA1.5/10per_denoise/global-w/joint-score-beta-2.0_burn-in-12800_orcnn-head_all-refine-loss_box-O2M-loss_detach_GA/latest.pth'
+load_from = None
 
 
 
@@ -62,7 +50,7 @@ load_from = 'log/dtbaseline/DOTA1.5/10per_denoise/global-w/joint-score-beta-2.0_
 angle_version = 'le90'
 # model settings
 detector = dict(
-    type='SemiRotatedBLFCOS',
+    type='SemiRotatedBLRefineFCOS',
     backbone=dict(
         type='ResNet',
         depth=50,
@@ -101,17 +89,100 @@ detector = dict(
         loss_bbox=dict(type='RotatedIoULoss', loss_weight=1.0),
         loss_centerness=dict(
             type='CrossEntropyLoss', use_sigmoid=True, loss_weight=1.0)),
-    # training and testing settings
-    train_cfg=None,
+    # 这部分充当去噪微调模块:
+    # (roi_head, train_cfg, test_cfg): reference: /data/yht/code/sood-mcl/mmrotate-0.3.4/configs/oriented_rcnn/oriented_rcnn_r50_fpn_1x_dota_le90.py
+    roi_head=dict(
+        type='ORCNNRoIHead',
+        bbox_roi_extractor=dict(
+            type='RotatedSingleRoIExtractor',
+            roi_layer=dict(
+                type='RoIAlignRotated',
+                out_size=7,
+                sample_num=2,
+                clockwise=True),
+            out_channels=256,
+            featmap_strides=[8, 16, 32, 64, 128]),
+        bbox_head=dict(
+            type='RotatedShared2FCBBoxHead',
+            in_channels=256,
+            fc_out_channels=1024,
+            roi_feat_size=7,
+            num_classes=nc,
+            bbox_coder=dict(
+                type='DeltaXYWHAOBBoxCoder',
+                angle_range=angle_version,
+                norm_factor=None,
+                edge_swap=True,
+                proj_xy=True,
+                target_means=(.0, .0, .0, .0, .0),
+                target_stds=(0.1, 0.1, 0.2, 0.2, 0.1)),
+            reg_class_agnostic=True,
+            loss_cls=dict(
+                type='CrossEntropyLoss', use_sigmoid=False, loss_weight=1.0),
+            loss_bbox=dict(type='SmoothL1Loss', beta=1.0, loss_weight=1.0))),
+    train_cfg=dict(
+        rpn=dict(
+            assigner=dict(
+                type='MaxIoUAssigner',
+                pos_iou_thr=0.7,
+                neg_iou_thr=0.3,
+                min_pos_iou=0.3,
+                match_low_quality=True,
+                ignore_iof_thr=-1),
+            sampler=dict(
+                type='RandomSampler',
+                num=256,
+                pos_fraction=0.5,
+                neg_pos_ub=-1,
+                add_gt_as_proposals=False),
+            allowed_border=0,
+            pos_weight=-1,
+            debug=False),
+        rpn_proposal=dict(
+            nms_pre=2000,
+            max_per_img=2000,
+            nms=dict(type='nms', iou_threshold=0.8),
+            min_bbox_size=0),
+        rcnn=dict(
+            assigner=dict(
+                type='MaxIoUAssigner',
+                pos_iou_thr=0.5,
+                neg_iou_thr=0.5,
+                min_pos_iou=0.5,
+                match_low_quality=False,
+                iou_calculator=dict(type='RBboxOverlaps2D'),
+                ignore_iof_thr=-1),
+            sampler=dict(
+                type='RRandomSampler',
+                num=512,
+                pos_fraction=0.25,
+                neg_pos_ub=-1,
+                add_gt_as_proposals=True),
+            pos_weight=-1,
+            debug=False)),
     test_cfg=dict(
+        rpn=dict(
+            nms_pre=2000,
+            max_per_img=2000,
+            nms=dict(type='nms', iou_threshold=0.8),
+            min_bbox_size=0),
+        rcnn=dict(
+            nms_pre=2000,
+            min_bbox_size=0,
+            score_thr=0.05,
+            nms=dict(iou_thr=0.1),
+            max_per_img=2000),
+        # 原本就有的:
         nms_pre=2000,
         min_bbox_size=0,
         score_thr=0.05,
         nms=dict(iou_thr=0.1),
-        max_per_img=2000))
+        max_per_img=2000,
+    )
+)
 
 model = dict(
-    type="RotatedDTBaseline",
+    type="RotatedDTBaselineSS",
     model=detector,
     # newly added
     prototype=prototype,
@@ -135,8 +206,8 @@ common_pipeline = [
     dict(type='DefaultFormatBundle'),
     dict(type='Collect', keys=['img', 'gt_bboxes', 'gt_labels'],
          meta_keys=('filename', 'ori_filename', 'ori_shape',
-                    'img_shape', 'pad_shape', 'scale_factor', 'flip', 'flip_direction', 
-                    'img_norm_cfg', 'tag')
+                    'img_shape', 'pad_shape', 'scale_factor', 'flip',
+                    'flip_direction', 'img_norm_cfg', 'tag')
          )
 ]
 strong_pipeline = [
@@ -207,7 +278,8 @@ dataset_type = 'DOTADataset'
 classes = ('plane', 'baseball-diamond', 'bridge', 'ground-track-field',
            'small-vehicle', 'large-vehicle', 'ship', 'tennis-court',
            'basketball-court', 'storage-tank', 'soccer-ball-field',
-           'roundabout', 'harbor', 'swimming-pool', 'helicopter', 'container-crane')
+           'roundabout', 'harbor', 'swimming-pool', 'helicopter',
+           'container-crane')
 data = dict(
     samples_per_gpu=3,
     workers_per_gpu=5,

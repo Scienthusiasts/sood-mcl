@@ -20,9 +20,9 @@ CLASSES = ('large-vehicle', 'swimming-pool', 'helicopter', 'bridge', 'plane',
 
 
 @ROTATED_LOSSES.register_module()
-class RotatedDTLoss(nn.Module):
+class RotatedDTSSLoss(nn.Module):
     def __init__(self, cls_channels=16, loss_type='origin', bbox_loss_type='l1'):
-        super(RotatedDTLoss, self).__init__()
+        super(RotatedDTSSLoss, self).__init__()
         self.cls_channels = cls_channels
         assert bbox_loss_type in ['l1', 'iou']
         self.bbox_loss_type = bbox_loss_type
@@ -53,11 +53,17 @@ class RotatedDTLoss(nn.Module):
         ], dim=1).view(-1, 1)
         return cls_scores, bbox_preds, centernesses
 
-    def forward(self, teacher_logits, student_logits, ratio=0.03, img_metas=None, **kwargs):
+    def forward(self, reshape_t_logits, reshape_s_logits, ratio=0.03, img_metas=None, **kwargs):
 
-        t_cls_scores, t_bbox_preds, t_centernesses = self.convert_shape(teacher_logits)
-        s_cls_scores, s_bbox_preds, s_centernesses = self.convert_shape(student_logits)
+        # 注意cls_scores和centernesses都是未经过sigmoid()的logits
+        t_cls_scores, t_bbox_preds, t_centernesses = reshape_t_logits
+        s_cls_scores, s_bbox_preds, s_centernesses = reshape_s_logits
 
+        # 首先获取联合置信度(ss分支会用到)
+        # t_scores, t_pred提取最大的类别置信度和对应的类别索引 [bs * h * w, cat_num] -> [bs * h * w], [bs * h * w]
+        t_scores, t_pred = torch.max(t_cls_scores.sigmoid(), 1)
+        t_joint_scores = t_centernesses.sigmoid().reshape(-1) * t_scores
+        weight_mask = 1 / (1 + torch.exp(-10 * t_joint_scores)).pow(10) - 1/1024. 
         with torch.no_grad():
             # Region Selection
             count_num = int(t_cls_scores.size(0) * ratio)
@@ -82,24 +88,6 @@ class RotatedDTLoss(nn.Module):
                 s_bbox_preds[b_mask],
                 t_bbox_preds[b_mask],
             ) * t_centernesses.sigmoid()[b_mask]).mean()
-        else:
-            all_level_points = self.prior_generator.grid_priors(
-                [featmap.size()[-2:] for featmap in teacher_logits[0]],
-                dtype=s_bbox_preds.dtype,
-                device=s_bbox_preds.device)
-            flatten_points = torch.cat(
-                [points.repeat(len(teacher_logits[0][0]), 1) for points in all_level_points])
-            s_bbox_preds = self.bbox_coder.decode(flatten_points, s_bbox_preds)[b_mask]
-            t_bbox_preds = self.bbox_coder.decode(flatten_points, t_bbox_preds)[b_mask]
-            loss_bbox = self.bbox_loss(
-                s_bbox_preds,
-                t_bbox_preds,
-            ) * t_centernesses.sigmoid()[b_mask]
-            nan_indexes = ~torch.isnan(loss_bbox)
-            if nan_indexes.sum() == 0:
-                loss_bbox = torch.zeros(1, device=s_cls_scores.device).sum()
-            else:
-                loss_bbox = loss_bbox[nan_indexes].mean()
 
         loss_centerness = F.binary_cross_entropy(
             s_centernesses[b_mask].sigmoid(),
@@ -115,7 +103,7 @@ class RotatedDTLoss(nn.Module):
             S_dps=S_dps
         )
 
-        return unsup_losses
+        return unsup_losses, weight_mask
 
 
 def QFLv2(pred_sigmoid,

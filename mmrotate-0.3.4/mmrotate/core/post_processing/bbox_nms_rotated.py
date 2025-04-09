@@ -57,11 +57,10 @@ def multiclass_nms_rotated(multi_bboxes,
     # NOTE: yan, add .to(bboxes.device), otherwise RuntimeError: indices should be either on cpu or on the sae device as the indexed tensor (cpu)
     labels = labels.to(bboxes.device)
     bboxes, scores, labels = bboxes[inds], scores[inds], labels[inds]
-
     if bboxes.numel() == 0:
         dets = torch.cat([bboxes, scores[:, None]], -1)
         if return_inds:
-            return dets, labels, inds
+            return dets, labels, inds, False
         else:
             return dets, labels
 
@@ -87,7 +86,7 @@ def multiclass_nms_rotated(multi_bboxes,
     labels = labels[keep]
 
     if return_inds:
-        return torch.cat([bboxes, scores[:, None]], 1), labels, keep
+        return torch.cat([bboxes, scores[:, None]], 1), labels, inds, keep
     else:
         return torch.cat([bboxes, scores[:, None]], 1), labels
 

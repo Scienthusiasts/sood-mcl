@@ -3,6 +3,21 @@ angle_version = 'le90'
 import torchvision.transforms as transforms
 from copy import deepcopy
 
+
+
+
+# 数据集路径:
+version = 1.5
+train_image_dir =   f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train/images/'
+train_label_dir =   f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train/{version}/annfiles/'
+val_image_dir =         f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/val/images'
+val_label_dir =         f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/val/{version}/annfiles'
+test_image_dir =        f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/test/images'
+
+total_iters = 120000
+
+
+
 # model settings
 detector = dict(
     type='SemiRotatedFCOS',
@@ -63,7 +78,7 @@ model = dict(
     semi_loss=dict(type='RotatedMCLLoss', cls_channels=16),
     train_cfg=dict(
         iter_count=0,
-        burn_in_steps=16000,
+        burn_in_steps=total_iters,
         sup_weight=1.0,
         unsup_weight=1.0,
         weight_suppress="linear",
@@ -161,15 +176,15 @@ data = dict(
         type="SemiDataset",
         sup=dict(
             type=dataset_type,
-            ann_file="/workspace/DOTA/v15/train_split/labelTxt/",
-            img_prefix="/workspace/DOTA/v15/train_split/images/",
+            ann_file=train_label_dir,
+            img_prefix=train_image_dir,
             classes=classes,
             pipeline=sup_pipeline,
         ),
         unsup=dict(
             type=dataset_type,
-            ann_file="/workspace/DOTA/v15/test_split/empty_annfiles/",
-            img_prefix="/workspace/DOTA/v15/test_split/images/",
+            ann_file=train_label_dir,
+            img_prefix=train_image_dir,
             classes=classes,
             pipeline=unsup_pipeline,
             filter_empty_gt=False,
@@ -177,15 +192,15 @@ data = dict(
     ),
     val=dict(
         type=dataset_type,
-        img_prefix="/workspace/DOTA/v15/val_split/images/",
-        ann_file='/workspace/DOTA/v15/val_split/labelTxt/',
+        img_prefix=val_image_dir,
+        ann_file=val_label_dir,
         classes=classes,
         pipeline=test_pipeline
     ),
     test=dict(
         type=dataset_type,
-        img_prefix="/workspace/DOTA/v15/val_split/images/",
-        ann_file='/workspace/DOTA/v15/val_split/labelTxt/',
+        img_prefix=val_image_dir,
+        ann_file=val_label_dir,
         classes=classes,
         pipeline=test_pipeline,
     ),
@@ -218,9 +233,9 @@ lr_config = dict(
     warmup='linear',
     warmup_iters=500,
     warmup_ratio=1.0 / 3,
-    step=[120000, 160000])
+    step=total_iters)
 # 120k iters is enough for DOTA
-runner = dict(type="IterBasedRunner", max_iters=180000)
+runner = dict(type="IterBasedRunner", max_iters=total_iters)
 checkpoint_config = dict(by_epoch=False, interval=3200, max_keep_ckpts=50)
 
 # Default: disable fp16 training

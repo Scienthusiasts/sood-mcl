@@ -281,18 +281,6 @@ class SemiRotatedFCOSHeadMCL(RotatedFCOSHead):
         angle_targets = gt_angle[range(num_points), min_area_inds]
 
         centerness_targets = 1 - gaussian_center[range(num_points), min_area_inds]
-
-
-        # sizes = [128, 64, 32, 16, 8]
-        # centerness_targets = torch.clamp(centerness_targets, 0, 1)
-        # cnt_targets = torch.split(centerness_targets, [size * size for size in sizes], dim=0)
-        # for lvl, lvl_t_gaussian_center in enumerate(cnt_targets):
-        #     if lvl!=0:continue
-        #     lvl_t_gaussian_center = lvl_t_gaussian_center.reshape(sizes[lvl], sizes[lvl])
-        #     plt.imshow(lvl_t_gaussian_center.cpu().numpy())
-        #     plt.savefig('./soft_GCA.jpg', dpi=200)
-
-
         return labels, bbox_targets, angle_targets, centerness_targets
 
 

@@ -18,8 +18,8 @@ nc = 16
 # 伪标签筛选超参
 semi_loss = dict(type='RotatedDTBLLoss', cls_channels=nc, loss_type='origin', bbox_loss_type='l1', 
                  # 'topk', 'top_dps', 'catwise_top_dps', 'global_w', 'sla'
-                #  p_selection = dict(mode='global_w', k=0.01, beta=2.0),
-                p_selection = dict(mode='sla', k=0.01, beta=1.0),
+                 p_selection = dict(mode='global_w', k=0.01, beta=2.0),
+                # p_selection = dict(mode='sla', k=0.01, beta=1.0),
                  # 蒸馏超参数  'kld', 'l2', 'qflv2'
                  distill = dict(mode='l2', beta=1.0, loss_weight=1.0),
                  )

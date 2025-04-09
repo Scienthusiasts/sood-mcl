@@ -1,7 +1,3 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-# @Time : 2022/9/18 17:03
-# @Author : WeiHua
 import torch
 import numpy as np
 from .rotated_semi_detector import RotatedSemiDetector
@@ -16,9 +12,9 @@ from mmrotate.models import ROTATED_LOSSES, build_loss
 import torch.distributed as dist
 
 @ROTATED_DETECTORS.register_module()
-class RotatedDenseTeacherSS(RotatedSemiDetector):
-    def __init__(self, model: dict, semi_loss, nc, train_cfg=None, test_cfg=None, symmetry_aware=False):
-        super(RotatedDenseTeacherSS, self).__init__(
+class MCLTeacherSS(RotatedSemiDetector):
+    def __init__(self, model: dict, semi_loss, nc, train_cfg=None, test_cfg=None, pretrained=None):
+        super(MCLTeacherSS, self).__init__(
             dict(teacher=build_detector(model), student=build_detector(model)),
             semi_loss,
             train_cfg=train_cfg,
@@ -36,16 +32,13 @@ class RotatedDenseTeacherSS(RotatedSemiDetector):
             self.unsup_weight = train_cfg.get("unsup_weight", 1.0)
             self.weight_suppress = train_cfg.get("weight_suppress", "linear")
             self.logit_specific_weights = train_cfg.get("logit_specific_weights")
-            self.region_ratio = train_cfg.get("region_ratio")
-        self.symmetry_aware = symmetry_aware
         self.nc = nc
         self.QFLv2 = QFLv2()
         self.BCE_loss = BCELoss()
         self.JSDLoss = JSDivLoss()
 
-
     def forward_train(self, imgs, img_metas, **kwargs):
-        super(RotatedDenseTeacherSS, self).forward_train(imgs, img_metas, **kwargs)
+        super(MCLTeacherSS, self).forward_train(imgs, img_metas, **kwargs)
         gt_bboxes = kwargs.get('gt_bboxes')
         gt_labels = kwargs.get('gt_labels')
         # preprocess
@@ -97,6 +90,8 @@ class RotatedDenseTeacherSS(RotatedSemiDetector):
                 if self.iter_count <= target:
                     unsup_weight *= (self.iter_count - self.burn_in_steps) / self.burn_in_steps
 
+
+
             # get student data
             # NOTE: yan, 这里可以调整教师和学生增强的顺序
             aug_orders = ['unsup_strong', 'unsup_weak']     # 1.正常
@@ -121,11 +116,17 @@ class RotatedDenseTeacherSS(RotatedSemiDetector):
             # vis_rgb_tensor(ori_rot_img[0, ...], f"{rand_angle}_flip-{isflip}_{img_name}", './vis_ori_img')
 
 
+
+
+
             with torch.no_grad():
                 # get teacher data
                 teacher_logits = self.teacher.forward_train(get_data=True, **format_data[aug_orders[1]])
 
             student_logits = self.student.forward_train(get_data=True, **format_data[aug_orders[0]])
+
+
+
 
 
 
@@ -144,14 +145,26 @@ class RotatedDenseTeacherSS(RotatedSemiDetector):
             reshape_s_rot_logits, bs = convert_shape(s_rot_logits, self.nc, fpn=False)
             reshape_t_logits, bs = convert_shape(teacher_logits, self.nc, fpn=False)
 
+            '''旋转一致性自监督学习获取soft权重矩阵用于加权ss损失'''
+            # 注意cls_scores和centernesses都是未经过sigmoid()的logits
+            t_cls_scores, _, t_centernesses = reshape_t_logits
+            # 首先获取联合置信度(ss分支会用到)
+            # t_scores, t_pred提取最大的类别置信度和对应的类别索引 [bs * h * w, cat_num] -> [bs * h * w], [bs * h * w]
+            t_scores, _ = torch.max(t_cls_scores.sigmoid(), 1)
+            t_joint_scores = t_centernesses.sigmoid().reshape(-1) * t_scores
+            weight_mask = 1 / (1 + torch.exp(-10 * t_joint_scores)).pow(10) - 1/1024. 
+
             '''去除旋转一致性自监督学习的格式调整'''
             # s_ori_logits = student_logits
             # reshape_s_ori_logits, bs = convert_shape(s_ori_logits, self.nc)
             # reshape_t_logits, bs = convert_shape(teacher_logits, self.nc)
 
 
-            '''无监督分支'''
-            unsup_losses, weight_mask = self.semi_loss(reshape_t_logits, reshape_s_ori_logits, ratio=self.region_ratio, img_metas=format_data[aug_orders[1]])
+
+
+
+
+            unsup_losses = self.semi_loss(teacher_logits, s_ori_logits, img_metas=format_data['unsup_weak'], alone_angle=True)
 
             for key, val in self.logit_specific_weights.items():
                 if key in unsup_losses.keys():
@@ -159,9 +172,10 @@ class RotatedDenseTeacherSS(RotatedSemiDetector):
             for key, val in unsup_losses.items():
                 if key[:4] == 'loss':
                     losses[f"{key}_unsup"] = unsup_weight * val
-                    # losses[f"{key}_unsup"] = val
                 else:
                     losses[key] = val
+
+
 
 
 
@@ -235,7 +249,7 @@ class RotatedDenseTeacherSS(RotatedSemiDetector):
             # 拉直
             o_decode_bboxes = convert_shape_single(o_decode_bboxes_list, 5, bs_dim=False)
             rot_mask = convert_shape_single(rot_mask_list, 1, bs_dim=False).reshape(-1)
-            o_pos_mask = (o_weight_mask > 0.15) * rot_mask
+            # o_pos_mask = (o_weight_mask > 0.15) * rot_mask
             # r_max_clsscore = torch.max(r_cls_scores, dim=1)[0]
             # r_pos_mask = (r_max_clsscore > 0.15) * rot_mask
             o_weight_mask = o_weight_mask * (rot_mask + e)
@@ -311,7 +325,7 @@ class RotatedDenseTeacherSS(RotatedSemiDetector):
 
 
                 # 组织自监督一致性损失
-                ss_weight = 0.01
+                ss_weight = 0.1
                 # losses['ss_loss_cls'] = ss_loss_cls * ss_weight
                 # losses['ss_loss_cnt'] = ss_loss_cnt * ss_weight
                 losses['ss_loss_joint_score'] = ss_loss_joint_score * ss_weight
@@ -332,41 +346,30 @@ class RotatedDenseTeacherSS(RotatedSemiDetector):
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
         self.iter_count += 1
 
         return losses
-
-
-
-
-
-
-
-
-
-    def _load_from_state_dict(
-        self,
-        state_dict,
-        prefix,
-        local_metadata,
-        strict,
-        missing_keys,
-        unexpected_keys,
-        error_msgs,
-    ):
-        if not any(["student" in key or "teacher" in key for key in state_dict.keys()]):
-            keys = list(state_dict.keys())
-            state_dict.update({"teacher." + k: state_dict[k] for k in keys})
-            state_dict.update({"student." + k: state_dict[k] for k in keys})
-            for k in keys:
-                state_dict.pop(k)
-
-        return super()._load_from_state_dict(
-            state_dict,
-            prefix,
-            local_metadata,
-            strict,
-            missing_keys,
-            unexpected_keys,
-            error_msgs,
-        )

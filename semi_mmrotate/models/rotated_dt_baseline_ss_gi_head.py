@@ -7,23 +7,41 @@ import numpy as np
 from .rotated_semi_detector import RotatedSemiDetector
 from mmrotate.models.builder import ROTATED_DETECTORS
 from mmrotate.models import build_detector
-# yan
+# yan 
+import copy
+import os
+import cv2
+from mmrotate.models import ROTATED_LOSSES, build_loss
+from mmrotate.core import rbbox2result, poly2obb_np, obb2poly, poly2obb, build_bbox_coder, obb2xyxy
+from mmdet.core.anchor.point_generator import MlvlPointGenerator
+from  mmdet.core.bbox.samplers.sampling_result import SamplingResult
 from custom.utils import *
 from custom.visualize import *
 from torchvision.transforms import InterpolationMode
 from custom.loss import QFLv2, BCELoss, JSDivLoss
-from mmrotate.models import ROTATED_LOSSES, build_loss
+# 计算IoU Loss
+from mmcv.ops import diff_iou_rotated_2d
+
+from loguru import logger
 import torch.distributed as dist
 
+
+
+
 @ROTATED_DETECTORS.register_module()
-class RotatedDenseTeacherSS(RotatedSemiDetector):
-    def __init__(self, model: dict, semi_loss, nc, train_cfg=None, test_cfg=None, symmetry_aware=False):
-        super(RotatedDenseTeacherSS, self).__init__(
+# GI的意思是group interactive, 即将之前的二阶段orcnn-roihead换成group proposals之间存在交互的roihead
+class RotatedDTBaselineGISS(RotatedSemiDetector):
+    def __init__(self, model: dict, prototype:dict, semi_loss, train_cfg=None, test_cfg=None, symmetry_aware=False, pretrained=None):
+        super(RotatedDTBaselineGISS, self).__init__(
             dict(teacher=build_detector(model), student=build_detector(model)),
             semi_loss,
             train_cfg=train_cfg,
             test_cfg=test_cfg,
         )
+        # 对回归的bbox解码会用到
+        self.bbox_coder = build_bbox_coder(dict(type='DistanceAnglePointCoder', angle_version='le90'))
+        self.prior_generator = MlvlPointGenerator([8, 16, 32, 64, 128])
+
         if train_cfg is not None:
             self.freeze("teacher")
             # ugly manner to get start iteration, to fit resume mode
@@ -36,16 +54,49 @@ class RotatedDenseTeacherSS(RotatedSemiDetector):
             self.unsup_weight = train_cfg.get("unsup_weight", 1.0)
             self.weight_suppress = train_cfg.get("weight_suppress", "linear")
             self.logit_specific_weights = train_cfg.get("logit_specific_weights")
-            self.region_ratio = train_cfg.get("region_ratio")
         self.symmetry_aware = symmetry_aware
-        self.nc = nc
+        # NOTE: prototype, added by yan
+        # self.prototype = FCOSPrototype(**prototype)
+        self.nc = prototype['cat_nums']
         self.QFLv2 = QFLv2()
         self.BCE_loss = BCELoss()
         self.JSDLoss = JSDivLoss()
 
 
+
+
+
+    def rearrange_order(self, bs, flatten_tensor):
+        '''调整flatten_tensor的拼接顺序
+           flatten_tensor: ============= ============= ---------- ---------- ~~~~~ ~~~~~ ·· ··
+           rearrange:      ============= ---------- ~~~~~ ·· ============= ---------- ~~~~~ ··
+        '''
+        scale_num = 5
+        lvl_range = [0, 16384, 20480, 21504, 21760, 21824]
+        sizes = [16384, 4096, 1024, 256, 64]
+        total_anchor_num = 21824
+        rearrange_flatten_tensor = torch.zeros_like(flatten_tensor)
+        for b in range(bs):
+            for lvl in range(scale_num):
+                rearrange_flatten_tensor[b * total_anchor_num + lvl_range[lvl]: b * total_anchor_num + lvl_range[lvl+1]] = \
+                flatten_tensor[lvl_range[lvl]*2+b*sizes[lvl]:lvl_range[lvl]*2+(b+1)*sizes[lvl]]
+        return rearrange_flatten_tensor
+
+
+    def extract_scale_order(self, bs):
+        scale_num = 5
+        lvl_range = [0, 16384, 20480, 21504, 21760, 21824]
+        total_anchor_num = 21824
+        lvl_idx = [[] for _ in range(scale_num)]
+        for b in range(bs):
+            for lvl in range(scale_num):
+                lvl_idx[lvl] += list(range(b * total_anchor_num + lvl_range[lvl], b * total_anchor_num + lvl_range[lvl+1]))
+        return lvl_idx
+
+
+
     def forward_train(self, imgs, img_metas, **kwargs):
-        super(RotatedDenseTeacherSS, self).forward_train(imgs, img_metas, **kwargs)
+        super(RotatedDTBaselineGISS, self).forward_train(imgs, img_metas, **kwargs)
         gt_bboxes = kwargs.get('gt_bboxes')
         gt_labels = kwargs.get('gt_labels')
         # preprocess
@@ -57,6 +108,7 @@ class RotatedDenseTeacherSS(RotatedSemiDetector):
             if tag not in format_data.keys():
                 format_data[tag] = dict()
                 format_data[tag]['img'] = [imgs[idx]]
+                # 'filename', 'ori_filename', 'ori_shape', 'img_shape', 'pad_shape', 'scale_factor', 'flip', 'flip_direction', 'img_norm_cfg', 'tag', 'batch_input_shape'
                 format_data[tag]['img_metas'] = [img_metas[idx]]
                 format_data[tag]['gt_bboxes'] = [gt_bboxes[idx]]
                 format_data[tag]['gt_labels'] = [gt_labels[idx]]
@@ -67,10 +119,64 @@ class RotatedDenseTeacherSS(RotatedSemiDetector):
                 format_data[tag]['gt_labels'].append(gt_labels[idx])
         for key in format_data.keys():
             format_data[key]['img'] = torch.stack(format_data[key]['img'], dim=0)
-            # print(f"{key}: {format_data[key]['img'].shape}")
+            
+        '''全监督分支'''
         losses = dict()
-        # supervised forward
-        sup_losses = self.student.forward_train(**format_data['sup'])
+        # supervised forward and loss
+        # NOTE:yan, 这里额外回传类别GT, 正样本索引, fpn的多尺度特征, 用于计算prototype
+        # print(format_data['sup']['gt_bboxes'][0])
+        sup_losses_and_data, sup_fpn_feat = self.student.forward_train(return_fpn_feat=True, get_data=False, **format_data['sup'])
+        bs = sup_fpn_feat[0].shape[0]
+
+        sup_losses, flatten_labels, flatten_centerness, flatten_cls_scores, flatten_bbox_preds, flatten_angle_preds = sup_losses_and_data
+        # 调整拼接顺序
+        flatten_cls_scores = self.rearrange_order(bs, flatten_cls_scores).sigmoid()
+        flatten_cls_labels = torch.argmax(flatten_cls_scores, dim=1, keepdim=True)
+        flatten_centerness = self.rearrange_order(bs, flatten_centerness).sigmoid()
+        flatten_bbox_preds = self.rearrange_order(bs, flatten_bbox_preds)
+        flatten_angle_preds = self.rearrange_order(bs, flatten_angle_preds)
+        # 获得联合置信度
+        flatten_joint_score = torch.einsum('ij, i -> ij', flatten_cls_scores, flatten_centerness).max(dim=-1)[0].unsqueeze(1)
+        # [bs, total_anchor_num, 7=(cx, cy, w, h, θ, joint_score, label)] 这里的 cx, cy, w, h, θ格式还不对, 还需要解码
+        rbb_preds = torch.cat([flatten_bbox_preds, flatten_angle_preds, flatten_joint_score, flatten_cls_labels], dim=-1).reshape(bs, -1, 7)
+        '''有监督分支进行预测框去噪微调'''
+        # NOTE:Ablation1: 断开refine-head与主体检测器的梯度
+        sup_fpn_feat = [fpn_feat.detach() for fpn_feat in sup_fpn_feat]
+        # NOTE:Ablation2: 维持refine-head与主体检测器的梯度
+        # sup_fpn_feat = [fpn_feat for fpn_feat in sup_fpn_feat]
+        # 0.对原始预测解码
+        # 这里rbb_preds不加.detach() 会报inplace op的错
+        rbb_preds = self.rbb_decode(bs, sup_fpn_feat, rbb_preds.detach())
+        # 1.将batch拆开, 变为list, 符合roi_head.forward_train的输入格式
+        proposal_list = []
+        for i in range(bs):
+            # 本来只包括坐标, 现在连score也加进去:
+            proposal_list.append(rbb_preds[i, :, :6])
+
+        # 3.送入roi head进行微调
+        # 注意 roi_head.forward_train接受的回归框坐标的格式是[cx, cy, w, h, a]
+        roi_losses = self.student.roi_head.loss(
+            sup_fpn_feat, 
+            rbb_preds, flatten_cls_scores.reshape(bs, -1, self.nc), flatten_centerness.reshape(bs, -1),
+            format_data['sup']['gt_bboxes'], format_data['sup']['gt_labels'],
+            format_data['sup'],
+            train_mode='train_sup'
+            )
+
+        # 有监督分支可视化微调模块的推理结果(一般情况下注释)
+        # vis_sup_bboxes_batch(self.teacher, format_data['sup'], bs, self.nc, flatten_cls_scores.reshape(bs, -1, self.nc).detach(), sup_fpn_feat, rbb_preds, './vis_res_wo_nms')
+        
+        # 4.组织微调模块的损失
+        for key, val in roi_losses.items():
+            if key[:4] == 'loss':
+                losses[f"{key}_refine_sup"] = self.sup_weight * val
+            else:
+                losses[key] = val
+
+
+
+
+        # 组织全监督损失
         for key, val in sup_losses.items():
             if key[:4] == 'loss':
                 if isinstance(val, list):
@@ -79,9 +185,10 @@ class RotatedDenseTeacherSS(RotatedSemiDetector):
                     losses[f"{key}_sup"] = self.sup_weight * val
             else:
                 losses[key] = val
+
+        '''无监督分支'''
         if self.iter_count > self.burn_in_steps:
-            # Train Logic
-            # unsupervised forward
+            # burn_in之后的慢启动, 慢慢增加无监督分支损失的权重
             unsup_weight = self.unsup_weight
             if self.weight_suppress == 'exp':
                 target = self.burn_in_steps + 2000
@@ -121,14 +228,21 @@ class RotatedDenseTeacherSS(RotatedSemiDetector):
             # vis_rgb_tensor(ori_rot_img[0, ...], f"{rand_angle}_flip-{isflip}_{img_name}", './vis_ori_img')
 
 
+
+
+
+            '''无监督分支前向, 得到特征图和推理结果'''
             with torch.no_grad():
                 # get teacher data
-                teacher_logits = self.teacher.forward_train(get_data=True, **format_data[aug_orders[1]])
-
-            student_logits = self.student.forward_train(get_data=True, **format_data[aug_orders[0]])
-
-
-
+                # NOTE:yan, 这里额外回传类别GT, 正样本索引, fpn的多尺度特征, 用于计算prototype
+                teacher_logits, t_fpn_feat = self.teacher.forward_train(return_fpn_feat=True, get_data=True, **format_data[aug_orders[1]])
+                teacher_logits = list(teacher_logits)
+                teacher_logits.append(t_fpn_feat)
+            # NOTE:yan, 这里额外回传类别GT, 正样本索引, fpn的多尺度特征, 用于计算prototype(这里保留s_fpn_feat, 后续可以和t_fpn_feat做自蒸馏)
+            student_logits, s_fpn_feat = self.student.forward_train(return_fpn_feat=True, fpn_feat_grad=True, get_data=True, **format_data[aug_orders[0]])
+            student_logits = list(student_logits)
+            student_logits.append(s_fpn_feat)
+            
             '''格式调整(旋转一致性自监督学习)'''
             # 将原始图像的推理结果与旋转图像的推理结果分离开
             s_ori_logits,  s_rot_logits = [], []
@@ -139,10 +253,10 @@ class RotatedDenseTeacherSS(RotatedSemiDetector):
                 s_ori_logits.append(ori_logits)
                 s_rot_logits.append(rot_logits)
             # 对输出的特征进行reshape
-            # [total_grid_num, cat_num], [total_grid_num, 4+1], [total_grid_num, 1]
-            reshape_s_ori_logits, bs = convert_shape(s_ori_logits, self.nc, fpn=False)
-            reshape_s_rot_logits, bs = convert_shape(s_rot_logits, self.nc, fpn=False)
-            reshape_t_logits, bs = convert_shape(teacher_logits, self.nc, fpn=False)
+            # [total_grid_num, cat_num], [total_grid_num, 4+1], [total_grid_num, 1], [total_grid_num, 256]
+            reshape_s_ori_logits, bs = convert_shape(s_ori_logits, self.nc)
+            reshape_s_rot_logits, bs = convert_shape(s_rot_logits, self.nc)
+            reshape_t_logits, bs = convert_shape(teacher_logits, self.nc)
 
             '''去除旋转一致性自监督学习的格式调整'''
             # s_ori_logits = student_logits
@@ -150,9 +264,14 @@ class RotatedDenseTeacherSS(RotatedSemiDetector):
             # reshape_t_logits, bs = convert_shape(teacher_logits, self.nc)
 
 
-            '''无监督分支'''
-            unsup_losses, weight_mask = self.semi_loss(reshape_t_logits, reshape_s_ori_logits, ratio=self.region_ratio, img_metas=format_data[aug_orders[1]])
 
+
+
+
+            '''无监督分支'''
+            # weight_mask旋转自监督分支会用到
+            unsup_losses, weight_mask = self.semi_loss(self.student, self.teacher, reshape_t_logits, reshape_s_ori_logits, s_ori_logits, teacher_logits, bs, sup_img_metas=format_data[aug_orders[1]], unsup_img_metas=format_data[aug_orders[0]])
+            # 组织无监督损失
             for key, val in self.logit_specific_weights.items():
                 if key in unsup_losses.keys():
                     unsup_losses[key] *= val
@@ -164,11 +283,10 @@ class RotatedDenseTeacherSS(RotatedSemiDetector):
                     losses[key] = val
 
 
-
             '''旋转一致性自监督分支(旋转一致性自监督学习)'''
             # 注意cls_scores和centernesses都是未经过sigmoid()的logits. _bbox_preds=[total_anchor_num, 5=(cx, cy, w, h, θ)]
-            o_cls_scores, o_bbox_preds, o_centernesses = reshape_s_ori_logits
-            r_cls_scores, r_bbox_preds, r_centernesses = reshape_s_rot_logits
+            o_cls_scores, o_bbox_preds, o_centernesses, _ = reshape_s_ori_logits
+            r_cls_scores, r_bbox_preds, r_centernesses, _ = reshape_s_rot_logits
 
             # 对原始图像上的预测结果旋转到与旋转结果对齐
             # 0.首先把长条状的特征再还原为二维图像的形状
@@ -235,7 +353,7 @@ class RotatedDenseTeacherSS(RotatedSemiDetector):
             # 拉直
             o_decode_bboxes = convert_shape_single(o_decode_bboxes_list, 5, bs_dim=False)
             rot_mask = convert_shape_single(rot_mask_list, 1, bs_dim=False).reshape(-1)
-            o_pos_mask = (o_weight_mask > 0.15) * rot_mask
+            # o_pos_mask = (o_weight_mask > 0.15) * rot_mask
             # r_max_clsscore = torch.max(r_cls_scores, dim=1)[0]
             # r_pos_mask = (r_max_clsscore > 0.15) * rot_mask
             o_weight_mask = o_weight_mask * (rot_mask + e)
@@ -279,9 +397,9 @@ class RotatedDenseTeacherSS(RotatedSemiDetector):
                 print(f"o_js_min:{o_joint_score[rot_mask].min()}, o_js_max:{o_joint_score[rot_mask].max()}")
                 print(f"r_js_min:{r_joint_score[rot_mask].min()}, r_js_max:{r_joint_score[rot_mask].max()}")
                 # ss_loss_joint_score = self.QFLv2(o_joint_score[rot_mask], r_joint_score[rot_mask], weight=torch.ones_like(o_joint_score[rot_mask], device=o_joint_score.device, dtype=torch.bool), reduction="none").sum() / o_weight_mask[rot_mask].sum()
-                ss_loss_joint_score = self.JSDLoss(o_joint_score[rot_mask], r_joint_score[rot_mask], to_distuibution=True, dist_dim=0, reduction='sum')
                 # ss_loss_joint_score = self.JSDLoss(o_joint_score[rot_mask], r_joint_score[rot_mask], to_distuibution=True, dist_dim=1, reduction='mean', loss_weight=1e3)
                 # ss_loss_joint_score = self.JSDLoss(o_joint_score[rot_mask], r_joint_score[rot_mask], to_distuibution=True, dist_dim=1, reduction='sum', loss_weight=1.) / o_weight_mask[rot_mask].sum()
+                ss_loss_joint_score = self.JSDLoss(o_joint_score[rot_mask], r_joint_score[rot_mask], to_distuibution=True, dist_dim=0, reduction='sum')
                 
 
                 '''自监督回归框(角度+尺度)一致损失'''
@@ -311,7 +429,7 @@ class RotatedDenseTeacherSS(RotatedSemiDetector):
 
 
                 # 组织自监督一致性损失
-                ss_weight = 0.01
+                ss_weight = 1.0
                 # losses['ss_loss_cls'] = ss_loss_cls * ss_weight
                 # losses['ss_loss_cnt'] = ss_loss_cnt * ss_weight
                 losses['ss_loss_joint_score'] = ss_loss_joint_score * ss_weight
@@ -322,38 +440,11 @@ class RotatedDenseTeacherSS(RotatedSemiDetector):
 
 
 
-
-
-
-
-
-
-
-
-
-
         self.iter_count += 1
-
         return losses
 
 
-
-
-
-
-
-
-
-    def _load_from_state_dict(
-        self,
-        state_dict,
-        prefix,
-        local_metadata,
-        strict,
-        missing_keys,
-        unexpected_keys,
-        error_msgs,
-    ):
+    def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs,):
         if not any(["student" in key or "teacher" in key for key in state_dict.keys()]):
             keys = list(state_dict.keys())
             state_dict.update({"teacher." + k: state_dict[k] for k in keys})
@@ -361,12 +452,33 @@ class RotatedDenseTeacherSS(RotatedSemiDetector):
             for k in keys:
                 state_dict.pop(k)
 
-        return super()._load_from_state_dict(
-            state_dict,
-            prefix,
-            local_metadata,
-            strict,
-            missing_keys,
-            unexpected_keys,
-            error_msgs,
-        )
+        return super()._load_from_state_dict(state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs,)
+
+
+
+
+    def rbb_decode(self, bs, sup_fpn_feat, rbb_preds):
+        '''对网络得到的框的回归值解码
+        '''
+        # 0.对角度再乘一个可学习的尺度(这里不加with torch.no_grad()显存会持续增加直到OOM, 不知道为啥)
+        # NOTE: 这里似乎不需要了(加上之后可视化角度不对, 去掉后角度就正常了), 很奇怪:
+        # NOTE: 所以之前训练其实角度都是不太对的? TvT(25-1-15)
+        # with torch.no_grad():
+        #     rbb_preds[:, :, 4] = self.student.bbox_head.scale_angle(rbb_preds[:, :, 4])
+        # 1. 获得grid网格点坐标
+        all_level_points = self.prior_generator.grid_priors(
+            [featmap.size()[-2:] for featmap in sup_fpn_feat],
+            dtype=rbb_preds.dtype,
+            device=rbb_preds.device
+            )
+        # [[h1*w1, 2], ..., [h5*w5, 2]] -> [total_anchor_num, 2]
+        concat_points = torch.cat(all_level_points, dim=0)
+        # 2. 对bbox的乘上对应的尺度
+        lvl_range  = [0, 16384, 20480, 21504, 21760, 21824]
+        lvl_stride = [8, 16, 32, 64, 128]
+        for i in range(bs):
+            for lvl in range(5):
+                rbb_preds[i, lvl_range[lvl]:lvl_range[lvl+1], :4] *= lvl_stride[lvl]
+            # 3. 对预测的bbox解码得到最终的结果, 并得到联合置信度作为类别置信度
+            rbb_preds[i, :, :5] = self.bbox_coder.decode(concat_points, rbb_preds[i, :, :5])
+        return rbb_preds

@@ -20,7 +20,7 @@ test_image_dir =        f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/test/
 # 类别数
 nc = 16
 # 伪标签筛选超参
-semi_loss = dict(type='RotatedDTBLLoss', cls_channels=nc, loss_type='origin', bbox_loss_type='l1', 
+semi_loss = dict(type='RotatedDTBLORCNNHeadLoss', cls_channels=nc, loss_type='origin', bbox_loss_type='l1', 
                  # 'topk', 'top_dps', 'catwise_top_dps', 'global_w', 'sla'
                  p_selection = dict(mode='global_w', k=0.01, beta=2.0),
                 #  p_selection = dict(mode='sla', k=0.01, beta=1.0),
@@ -43,7 +43,6 @@ load_from = 'log/dtbaseline/DOTA1.5/10per_denoise/global-w/joint-score-beta-2.0_
 # load_from = 'log/dtbaseline/DOTA1.5/10per_denoise/global-w/joint-score-beta-2.0_burn-in-12800_orcnn-head_all-refine-loss_box-O2M-loss_detach_GA_7_ssloss-nocls-w1.0_3/latest.pth'
 # load_from = 'log/dtbaseline/DOTA1.5/10per_denoise/global-w/joint-score-beta-2.0_burn-in-12800_orcnn-head_all-refine-loss_box-O2M-loss_detach_GA_7_ssloss-nocnt-w1.0/latest.pth'
 # load_from = None
-dist_params = dict(backend='nccl')
 
 
 
@@ -334,8 +333,12 @@ custom_hooks = [
 ]
 
 # evaluation
+# evaluation = dict(type="SubModulesDistEvalHook", interval=3200, metric='mAP',
+#                   save_best='mAP')
+# 单卡调试时推理报分布式的错，是BN的问题，在配置文件里加一个broadcast_这个参数
 evaluation = dict(type="SubModulesDistEvalHook", interval=3200, metric='mAP',
-                  save_best='mAP')
+                  save_best='mAP', broadcast_bn_buffer=False)
+
 
 # optimizer
 optimizer = dict(type='SGD', lr=0.0025, momentum=0.9, weight_decay=0.0001)
@@ -372,6 +375,7 @@ log_config = dict(
     ],
 )
 
+dist_params = dict(backend='nccl')
 log_level = 'INFO'
 resume_from = None
 workflow = [('train', 1)]   # mode, iters

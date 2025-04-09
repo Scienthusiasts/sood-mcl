@@ -180,16 +180,36 @@ rois = rbbox2roi([res.bboxes for res in sampling_results]) 这一行返回rois�
 bbox_results = self._bbox_forward(x, rois) 这一行是返回box_head已经推理出的结果, 有两个bbox_results['cls_score']和bbox_results['bbox_pred'](形状分别是[1024, 17]和[1024, 5]), 没有分组信息
 
 
+25_4_4:
+两个文件的区别:
+/data/yht/code/sood-mcl/semi_mmrotate/models/losses/rotated_dt_baseline_orcnnhead_loss_no_align.py
+/data/yht/code/sood-mcl/semi_mmrotate/models/losses/rotated_dt_baseline_orcnnhead_loss.py
+no_align的训练方式(之前都是这么训练的):
+t一阶段NMS结果→训练s二阶段检测头
+t二阶段检测结果→训练s一阶段头
+t的proposal给s二阶段头做微调训练
+no_align的训练方式:
+t二阶段检测结果→训练s二阶段检测头
+t二阶段检测结果→训练s一阶段头
+s的proposal给s二阶段头做微调训练
+
+但是跑完实验发现no_align的mAP反而还更高
 
 
+25_4_9
+偶然发现训练时, roi_head(即微调头)部分对teacher预测结果执行nms时的nms的score_thr参数对最终的结果影响很大(甚至能差一个多点):
+/data/yht/code/sood-mcl/custom/utils.py: batch_nms():
+        det_bboxes, det_labels, thr_idx, nms_idx = multiclass_nms_rotated(
+            multi_bboxes=bboxes[i, :, :5],            # [total_box_num, 5]
+            multi_scores=cls_scores_w_bg,                # [total_box_num, 16]
+            score_thr=0.2,                               # 0.05
+            nms={'iou_thr': 0.1},                        # {'iou_thr': 0.1}
+            max_num=2000,                                # 2000
+            score_factors=centerness[i, :],            # centerness[i, :] bboxes[i, :, 5]
+            return_inds=True
+            )
 
-
-
-
-
-
-
-
+原来score_thr=0.2, 如果改成score_thr=0.1,best的mAP会降1.5个点左右
 
 
 
@@ -249,237 +269,3 @@ RuntimeError: NCCL communicator was aborted on rank 0.  Original reason for fail
 
 
 
-
-# tmp:可视化bbox的不一致性:
-# 角度差异
-# t_angle_preds = t_bbox_preds[:, -1]
-# s_angle_preds = s_bbox_preds[:, -1]
-# feat_diff = torch.abs(t_angle_preds - s_angle_preds)
-# feat_diff = -torch.exp(-0.1 / feat_diff) + 1
-
-all_level_points = self.prior_generator.grid_priors(
-    [featmap.size()[-2:] for featmap in teacher_logits[0]],
-    dtype=s_bbox_preds.dtype,
-    device=s_bbox_preds.device)
-flatten_points = torch.cat([points.repeat(len(teacher_logits[0][0]), 1) for points in all_level_points])
-s_bbox_preds = self.bbox_coder.decode(flatten_points, s_bbox_preds)
-t_bbox_preds = self.bbox_coder.decode(flatten_points, t_bbox_preds)
-ts_iou = 1 - self.iou_loss(s_bbox_preds, t_bbox_preds)
-ts_iou = torch.clamp(ts_iou, 0, 1)
-# 可视化分析
-plt.scatter(weight_mask.detach().cpu().numpy(), ts_iou.detach().cpu().numpy(), s=1, c='b')
-plt.xlabel('joint score')
-plt.ylabel('t & s RIoU')
-plt.savefig('./ts-RIoU_joint-score_histmap.jpg', dpi=200)
-
-
-
-
-
-
-
-
-
-        '''test box微调centerness'''
-        sizes = [128, 64, 32, 16, 8]
-        all_level_points = self.prior_generator.grid_priors(
-            [featmap.size()[-2:] for featmap in teacher_logits[0]],
-            dtype=s_bbox_preds.dtype,
-            device=s_bbox_preds.device
-            )
-        flatten_points = torch.cat([points.repeat(len(teacher_logits[0][0]), 1) for points in all_level_points])
-        # 对预测的bbox解码得到最终的结果
-        t_bbox_preds = self.bbox_coder.decode(flatten_points, t_bbox_preds)
-
-        # 将box坐标与分类置信度concat [bs, total_anchor_num, 6=(cx, cy, w, h, θ, score)] (cx, cy是基于原图的尺寸)
-        t_preds = torch.cat([t_bbox_preds, torch.sigmoid(torch.max(t_cls_scores, 1)[0]).unsqueeze(1)], dim=1).reshape(bs, t_bbox_preds.shape[0]//bs, 6)
-        # [bs, total_anchor_num, 6] -> [[bs, h1*w1, 6], ..., [bs, h5*w5, 6]]
-        t_preds_list = torch.split(t_preds, [size * size for size in sizes], dim=1)
-        # 遍历所有尺度
-        for size_id, bs_lvl_t_preds in enumerate(t_preds_list):
-            # 上采样率
-            upsample_rate = 1024 // sizes[size_id]
-            # 遍历batch里的每张图像
-            for lvl_t_preds in bs_lvl_t_preds:
-                dense_y, dense_x = lvl_t_preds[:, 0].type(torch.int32), lvl_t_preds[:, 1].type(torch.int32)
-                dense_x = torch.clamp(dense_x, 0, 1024)
-                dense_y = torch.clamp(dense_y, 0, 1024)
-        
-                if size_id !=0: continue
-            
-                # 创建空白画布
-                fig = torch.zeros((sizes[size_id], sizes[size_id]), device=lvl_t_preds.device)
-                for x, y, score in zip(dense_x, dense_y, lvl_t_preds[:, -1]):
-                    fig[x//upsample_rate, y//upsample_rate] += score
-                # cls map
-                cat_score_map = lvl_t_preds[:, -1].reshape(sizes[size_id], sizes[size_id])
-                # 发现调整后并下采样的cls_mask居然和原始的cls_mask完全一致(说明每个grid微调的中心都不超过下采样率=8)
-                # print((fig - cat_score_map).sum())
-                '''可视化'''
-                plt.figure(figsize = (10, 5))
-                # 可视化原图
-                plt.subplot(1,2,1)
-                plt.imshow(fig.cpu().numpy())
-                plt.axis('off')
-                # # 可视化伪框中心点
-                # plt.subplot(1,2,2)
-                # plt.imshow(cat_score_map.cpu().numpy())
-                # plt.axis('off')
-                plt.subplots_adjust(left=0.01, bottom=0.01, right=0.99, top=0.99, wspace=0.01, hspace=0.01)
-                plt.savefig(f'./box_center.jpg', dpi=200)  
-
-
-
-
-
-'''测试cls_weighted_gaussian map的可视化会用到'''
-
-        plt.figure(figsize = (10, 6))
-        for lvl, lvl_soft_gaussian_center in enumerate(soft_gaussian_center):
-            lvl_soft_gaussian_center = lvl_soft_gaussian_center.reshape(sizes[lvl], sizes[lvl])
-            cat_score_map = t_joint_score[lvl].reshape(sizes[lvl], sizes[lvl])
-
-            '''可视化'''
-            # 可视化原图
-            plt.subplot(3,5,lvl+1)
-            plt.imshow(lvl_soft_gaussian_center.cpu().numpy(), vmin=0, vmax=1)
-            plt.axis('off')
-            # 可视化伪框中心点
-            plt.subplot(3,5,lvl+6)
-            plt.imshow(cat_score_map.cpu().numpy(), vmin=0, vmax=1)
-            plt.axis('off')
-
-        # 处理原图
-        std = np.array([58.395, 57.12 , 57.375]) / 255.
-        mean = np.array([123.675, 116.28 , 103.53]) / 255.
-        raw_img = self.img_metas['img'].squeeze(0).permute(1,2,0).cpu().numpy()
-        raw_img = np.clip(raw_img * std + mean, 0, 1)
-        # 可视化原图
-        plt.subplot(3,5,11)
-        plt.imshow(raw_img)
-        plt.axis('off')
-        plt.subplots_adjust(left=0.01, bottom=0.01, right=0.99, top=0.99, wspace=0.01, hspace=0.01)
-        plt.savefig(f"./vis_sgc/{self.img_metas['img_metas'][0]['ori_filename']}", dpi=200)  
-
-
-
-
-
-
-
-
-        '''/data/yht/code/sood-mcl/semi_mmrotate/models/losses/rotated_dt_baseline_loss.py decode_and_clustering()可视化部分'''
-        # 图像和图像名(默认batch=1)
-        img_name = [img_meta['ori_filename'] for img_meta in img_metas['img_metas']][0]
-        img = img_metas['img'].squeeze(0)
-        # 原图预处理
-        std = np.array([58.395, 57.12 , 57.375]) / 255.
-        mean = np.array([123.675, 116.28 , 103.53]) / 255.
-        img = img.permute(1,2,0).cpu().numpy()
-        img = np.clip(img * std + mean, 0, 1)
-        img = (img * 255.).astype(np.uint8)
-        img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-
-        poly_wbf_bboxes = obb2poly(wbf_bboxes)
-        poly_nms_bboxes = obb2poly(nms_bboxes)
-        # 可视化每个group里的框
-        for group_id in range(nms_bboxes.shape[0]):
-            # 随机颜色
-            color = np.random.randint(0, 256, size=3)
-            color = tuple([int(x) for x in color])
-            # img = OpenCVDrawBox(img, group_poly_boxes, group_bboxes[:, 6], group_bboxes[:, 5], color)
-            # 可视化WBF的框
-            img = OpenCVDrawBox(img, poly_wbf_bboxes[group_id].unsqueeze(0).cpu().numpy(), [0], [1], (0,255,0), 2)
-            # 可视化NMS的框
-            img = OpenCVDrawBox(img, poly_nms_bboxes[group_id].unsqueeze(0).cpu().numpy(), [0], [1], (0,0,255), 2)
-            
-
-        if not os.path.exists('./vis_res_wo_nms'):os.makedirs('./vis_res_wo_nms')
-        img_save_path = f"./vis_res_wo_nms/{img_name}"
-        cv2.imwrite(img_save_path, img)
-
-
-
-
-
-
-
-
-
-
-
-        '''/data/yht/code/sood-mcl/semi_mmrotate/models/rotated_dt_baseline.py 可视化GT与proposals'''
-        # 图像和图像名(默认batch=1)
-        img_names = [img_meta['ori_filename'] for img_meta in format_data['sup']['img_metas']]
-        images = format_data['sup']['img']
-        # 每张图片分别可视化
-        for batch in range(bs):
-            img_name = img_names[batch]
-            # 原图预处理
-            std = np.array([58.395, 57.12 , 57.375]) / 255.
-            mean = np.array([123.675, 116.28 , 103.53]) / 255.
-            img = images[batch].permute(1,2,0).cpu().numpy()
-            img = np.clip(img * std + mean, 0, 1)
-            img = (img * 255.).astype(np.uint8)
-            img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-            # 5参转8参
-            poly_rbb = obb2poly(proposal_list[batch])
-            poly_gt = obb2poly(format_data['sup']['gt_bboxes'][batch])
-            # 可视化proposals框
-            img = OpenCVDrawBox(img, poly_rbb.cpu().numpy(), poly_rbb, poly_rbb, (0,0,255), 1)
-            # 可视化GT框
-            img = OpenCVDrawBox(img, poly_gt.cpu().numpy(), poly_gt, poly_gt, (0,255,0), 2)
-            # 保存结果
-            if not os.path.exists('./vis_res_wo_nms'):os.makedirs('./vis_res_wo_nms')
-            img_save_path = f"./vis_res_wo_nms/{img_name}"
-            cv2.imwrite(img_save_path, img)
-
-
-
-
-
-
-
-
-
-
-        '''/data/yht/code/sood-mcl/semi_mmrotate/models/rotated_dt_baseline.py 可视化 proposals 与 refine_proposals'''
-        # 只推理
-        with torch.no_grad():
-            refine_box_list = []
-            # 还需先将rbbox转成水平外接矩
-            # hproposal_list = [obb2xyxy(p, 'le90') for p in proposal_list]
-            refine_bbox = self.student.roi_head.simple_test(sup_fpn_feat, hproposal_list, format_data['sup']['img_metas'], rescale=True)
-            # 调整输出格式, 把所有类别下的预测结果拼在一起
-            for i in range(bs):
-                res = np.concatenate(refine_bbox[i], axis=0)
-                refine_box_list.append(res)
-
-        # 图像和图像名(默认batch=1)
-        root_dir = './vis_res_wo_nms'
-        img_names = [img_meta['ori_filename'] for img_meta in format_data['sup']['img_metas']]
-        images = format_data['sup']['img']
-        # 每张图片分别可视化
-        for batch in range(bs):
-            img_name = img_names[batch]
-            # 原图预处理
-            std = np.array([58.395, 57.12 , 57.375]) / 255.
-            mean = np.array([123.675, 116.28 , 103.53]) / 255.
-            img = images[batch].permute(1,2,0).cpu().numpy()
-            img = np.clip(img * std + mean, 0, 1)
-            img = (img * 255.).astype(np.uint8)
-            img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-            # 5参转8参
-            poly_rbb = obb2poly(proposal_list[batch])
-            poly_refine_rbb = obb2poly(torch.tensor(refine_box_list[batch]).squeeze(0))
-            # poly_gt = obb2poly(format_data['sup']['gt_bboxes'][batch])
-            # 可视化proposals框
-            img = OpenCVDrawBox(img, poly_rbb.cpu().numpy(), poly_rbb, poly_rbb, (0,0,255), 1)
-            # 可视化refine proposals框
-            img = OpenCVDrawBox(img, poly_refine_rbb.numpy(), poly_refine_rbb, poly_refine_rbb, (0,255,0), 1)
-            # 可视化GT框
-            # img = OpenCVDrawBox(img, poly_gt.cpu().numpy(), poly_gt, poly_gt, (0,255,0), 2)
-            # 保存结果
-            if not os.path.exists(root_dir):os.makedirs(root_dir)
-            img_save_path = f"{root_dir}/{img_name}"
-            cv2.imwrite(img_save_path, img)

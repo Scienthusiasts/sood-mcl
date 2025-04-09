@@ -203,7 +203,7 @@ def vis_unsup_bboxes_batch(format_data, bs, nms_bboxes_list, proposal_list, refi
 
 
 
-def vis_grouping_batch(batch_gt_bboxes, batch_group_iou, batch_group_id_mask, batch_dense_bboxes, format_data, root_dir):
+def vis_grouping_batch(batch_gt_bboxes, batch_group_iou, batch_dense_bboxes, format_data, root_dir):
     '''可视化分组结果(依据gt_bboxes分组)
         Args: 
             batch_gt_bboxes:     gt或pgt  List([keep_num], ,..., [...])  
@@ -220,7 +220,7 @@ def vis_grouping_batch(batch_gt_bboxes, batch_group_iou, batch_group_id_mask, ba
     img_names = [img_meta['ori_filename'] for img_meta in format_data['img_metas']]
     images = format_data['img']
 
-    for img, img_name, gt_bboxes, group_id_mask, dense_bboxes in zip(images, img_names, batch_gt_bboxes, batch_group_id_mask, batch_dense_bboxes):
+    for img, img_name, gt_bboxes, dense_bboxes in zip(images, img_names, batch_gt_bboxes, batch_dense_bboxes):
         # 原图预处理
         std = np.array([58.395, 57.12 , 57.375]) / 255.
         mean = np.array([123.675, 116.28 , 103.53]) / 255.
@@ -228,18 +228,23 @@ def vis_grouping_batch(batch_gt_bboxes, batch_group_iou, batch_group_id_mask, ba
         img = np.clip(img * std + mean, 0, 1)
         img = (img * 255.).astype(np.uint8)
         img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-        # 5参转8参
-        poly_dense_bboxes = obb2poly(dense_bboxes[:, :5])
+
         # 可视化每个group里的框
-        for group_id in range(gt_bboxes.shape[0]):
-            # 找到属于当前group的所有框
-            mask = group_id_mask == group_id
+        for group_bboxes in dense_bboxes:
+            # 5参转8参
+            poly_group_bboxes = obb2poly(group_bboxes[:, :5])
             # 随机颜色
             color = np.random.randint(0, 256, size=3)
             color = tuple([int(x) for x in color])
             # 可视化一个group里的框
-            img = OpenCVDrawBox(img, poly_dense_bboxes[mask].cpu().numpy(), color, 1)
+            img = OpenCVDrawBox(img, poly_group_bboxes.detach().cpu().numpy(), color, 1)
+            
+        # group中心框(即gt)单独用绿色可视化区分
+        # 5参转8参
+        poly_gt_bboxes = obb2poly(gt_bboxes[:, :5])
+        img = OpenCVDrawBox(img, poly_gt_bboxes.detach().cpu().numpy(), (0,255,0), 1)
 
+        
         if not os.path.exists(root_dir):os.makedirs(root_dir)
         img_save_path = os.path.join(root_dir, img_name)
         cv2.imwrite(img_save_path, img)
@@ -312,12 +317,12 @@ def vis_rotate_feat(ori_img, rot_img, img_name, o_cls_scores, o_centernesses, r_
     vis_lvlfeat(rot_img, r_joint_score_list, img_name, './rot_lvl_joint_score', True, mask_list)
 
     # 可视化centerness
-    # vis_lvlfeat(ori_img, o_centernesses_list, img_name, './ori_lvl_cnt_score', True, mask_list)
-    # vis_lvlfeat(rot_img, r_centernesses_list, img_name, './rot_lvl_cnt_score', True, mask_list)
+    vis_lvlfeat(ori_img, o_centernesses_list, img_name, './ori_lvl_cnt_score', True, mask_list)
+    vis_lvlfeat(rot_img, r_centernesses_list, img_name, './rot_lvl_cnt_score', True, mask_list)
 
     # 可视化max cls score
-    # vis_lvlfeat(ori_img, o_joint_score_list, img_name, './ori_lvl_cls_score', True, mask_list)
-    # vis_lvlfeat(rot_img, r_joint_score_list, img_name, './rot_lvl_cls_score', True, mask_list)
+    vis_lvlfeat(ori_img, o_joint_score_list, img_name, './ori_lvl_cls_score', True, mask_list)
+    vis_lvlfeat(rot_img, r_joint_score_list, img_name, './rot_lvl_cls_score', True, mask_list)
 
     # 可视化 o_weight_mask
     vis_lvlfeat(ori_img, o_weight_mask_list, img_name, './ori_lvl_weight_mask', True, mask_list)
@@ -407,3 +412,147 @@ def vis_lvlriou(img, rbbox1, rbbox2, img_name, save_dir):
     if not os.path.exists(save_dir):os.makedirs(save_dir)
     plt.savefig(os.path.join(save_dir, img_name), dpi=200) 
     plt.close()
+
+
+def vis_HM_cost_matrix(cost_matrix, save_dir, img_name, range_limit=True):
+    """可视化匈牙利匹配的代价矩阵
+    """
+    if range_limit:
+        plt.imshow(cost_matrix.detach().cpu().numpy(), cmap='jet', vmin=0, vmax=1)
+    else:
+        plt.imshow(cost_matrix.detach().cpu().numpy(), cmap='jet')
+    plt.axis('off')
+    plt.subplots_adjust(left=0.01, bottom=0.01, right=0.99, top=0.99, wspace=0.01, hspace=0.01)
+    # 保存
+    if not os.path.exists(save_dir):os.makedirs(save_dir)
+    plt.savefig(os.path.join(save_dir, img_name), dpi=150) 
+    plt.close()
+
+
+
+def vis_HM_boxes(batch_match_pred_gt_bboxes, batch_match_gt_logits, img_metas, save_dir):
+    """可视化二分图匹配结果(仅可视化box坐标)
+    """
+    for match_pred_gt_bboxes, match_gt_logits, img, img_meta in zip(batch_match_pred_gt_bboxes, batch_match_gt_logits, img_metas['img'], img_metas['img_metas']):
+        # 原图预处理
+        std = np.array([58.395, 57.12 , 57.375]) / 255.
+        mean = np.array([123.675, 116.28 , 103.53]) / 255.
+        img = img.permute(1,2,0).cpu().numpy()
+        img = np.clip(img * std + mean, 0, 1)
+        img = (img * 255.).astype(np.uint8)
+        img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+        # 5参转8参
+        poly_pred_boxes = obb2poly(match_pred_gt_bboxes[0])
+        poly_gt_boxes = obb2poly(match_pred_gt_bboxes[1])
+        match_mask = poly_gt_boxes.sum(1)!=0
+
+        # opencv绘制框
+        for poly_pred_box, poly_gt_box in zip(poly_pred_boxes[match_mask].detach().cpu().numpy(), poly_gt_boxes[match_mask].detach().cpu().numpy()):
+            # 随机颜色
+            color = np.random.randint(0, 256, size=3)
+            gt_color = tuple([int(x) for x in color])
+            pred_color = tuple([int(min(x+35, 255)) for x in color])
+            # 绘制匹配上的那些框
+            img = OpenCVDrawBox(img, [poly_pred_box], pred_color, 2)
+            img = OpenCVDrawBox(img, [poly_gt_box], gt_color, 1)
+        # 绘制未匹配上的那些框
+        img = OpenCVDrawBox(img, poly_pred_boxes[~match_mask].detach().cpu().numpy(), (0,0,255), 1)
+
+        # img = OpenCVDrawBox(img, poly_gt_boxes[match_mask].detach().cpu().numpy(), (0,255,0), 2)
+        # img = OpenCVDrawBox(img, poly_pred_boxes[match_mask].detach().cpu().numpy(), (0,0,255), 2)
+        # # 绘制未匹配上的那些框
+        # img = OpenCVDrawBox(img, poly_pred_boxes[~match_mask].detach().cpu().numpy(), (255,255,255), 2)
+
+
+        if not os.path.exists(save_dir):os.makedirs(save_dir)
+        img_save_path = os.path.join(save_dir, img_meta['ori_filename'])
+        cv2.imwrite(img_save_path, img)
+
+
+def vis_HM_scores(batch_pred_logits, batch_match_gt_logits, batch_img_meta, save_dir):
+    """可视化二分图匹配结果(仅可视化score)
+    """
+    for match_pred_logits, match_gt_logits, img_meta in zip(batch_pred_logits, batch_match_gt_logits, batch_img_meta['img_metas']):
+        col, row = match_pred_logits.shape
+        fig, axes = plt.subplots(nrows=1, ncols=2)
+        # 绘制左图（pred scores）
+        axes[0].imshow(match_pred_logits.detach().cpu().numpy(), cmap='jet', vmin=0, vmax=1) 
+        axes[0].axis('off')
+        # 绘制右图（GT scores）
+        axes[1].imshow(match_gt_logits.detach().cpu().numpy(), cmap='jet', vmin=0, vmax=1)
+        axes[1].axis('off')
+        # 保存
+        plt.subplots_adjust(left=0.01, bottom=0.01, right=0.99, top=0.99, wspace=0.01, hspace=0.01)
+        if not os.path.exists(save_dir):os.makedirs(save_dir)
+        plt.savefig(os.path.join(save_dir, img_meta['ori_filename']), dpi=150) 
+        plt.close()
+
+
+
+def vis_gi_head_bboxes_batch(img_metas, bs, batch_idx, nms_bboxes, gi_boxes, root_dir):
+    '''无监督分支可视化微调模块的推理结果(dense, refined, pgt)
+        Args:
+            img_metas:   图像和图像信息
+            nms_bboxes:  nms后保留的结果
+            gi_boxes:    gi_head微调结果  
+            root_dir:    可视化结果保存路径
+        Returns:
+            None
+    '''
+    # 图像和图像名
+    img_names = [img_meta['ori_filename'] for img_meta in img_metas['img_metas']]
+    images = img_metas['img']
+    # 每张图片分别可视化
+    for batch in range(bs):
+        batch_mask = batch_idx==batch
+        gi_box = gi_boxes[batch_mask]
+        nms_box = nms_bboxes[batch_mask]
+        img_name = img_names[batch]
+        # 原图预处理
+        std = np.array([58.395, 57.12 , 57.375]) / 255.
+        mean = np.array([123.675, 116.28 , 103.53]) / 255.
+        img = images[batch].permute(1,2,0).cpu().numpy()
+        img = np.clip(img * std + mean, 0, 1)
+        img = (img * 255.).astype(np.uint8)
+        img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+        # 5参转8参
+        poly_nms_rbb = obb2poly(nms_box)
+        poly_refine_rbb = obb2poly(gi_box.clone())
+        # 可视化nms保留框
+        img = OpenCVDrawBox(img, poly_nms_rbb.detach().cpu().numpy(), (0,0,255), 2)
+        # 可视化refine proposals框
+        img = OpenCVDrawBox(img, poly_refine_rbb.detach().cpu().numpy(), (0,255,0), 2)
+        # 保存结果
+        if not os.path.exists(root_dir):os.makedirs(root_dir)
+        img_save_path = f"{root_dir}/{img_name}"
+        cv2.imwrite(img_save_path, img)
+
+
+def vis_gi_head_bboxes_single(image, img_name, nms_bboxes, gi_boxes, root_dir):
+    '''无监督分支可视化微调模块的推理结果(dense, refined, pgt)
+        Args:
+            img_metas:   图像和图像信息
+            nms_bboxes:  nms后保留的结果
+            gi_boxes:    gi_head微调结果  
+            root_dir:    可视化结果保存路径
+        Returns:
+            None
+    '''
+    # 原图预处理
+    std = np.array([58.395, 57.12 , 57.375]) / 255.
+    mean = np.array([123.675, 116.28 , 103.53]) / 255.
+    img = image.permute(1,2,0).cpu().numpy()
+    img = np.clip(img * std + mean, 0, 1)
+    img = (img * 255.).astype(np.uint8)
+    img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+    # 5参转8参
+    poly_nms_rbb = obb2poly(nms_bboxes)
+    poly_refine_rbb = obb2poly(gi_boxes.clone())
+    # 可视化nms保留框
+    img = OpenCVDrawBox(img, poly_nms_rbb.detach().cpu().numpy(), (0,0,255), 2)
+    # 可视化refine proposals框
+    img = OpenCVDrawBox(img, poly_refine_rbb.detach().cpu().numpy(), (0,255,0), 2)
+    # 保存结果
+    if not os.path.exists(root_dir):os.makedirs(root_dir)
+    img_save_path = f"{root_dir}/{img_name}"
+    cv2.imwrite(img_save_path, img)

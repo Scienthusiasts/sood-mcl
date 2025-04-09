@@ -119,7 +119,7 @@ class ORCNNRoIHead(RotatedStandardRoIHead):
             dict[str, Tensor]: a dictionary of bbox_results.
         """
         # 返回rois的坐标(形状是(1024, 6), [batch_ind, cx, cy, w, h, a]), 没有分组信息:
-        # sampling_results 里可以得到分组信息, 但是每个gt分配到的样本数不一样, 且没有置信度信息
+        # sampling_results 里可以得到分组信息, 但是每个gt分配到的样本数不一样, 且没有置信度信息 res.bboxes.shape = [512, 5]
         rois = rbbox2roi([res.bboxes for res in sampling_results])
         # 返回box_head已经推理出的结果 (bbox_results['cls_score'], bbox_results['bbox_pred'] 形状分别是[1024, 17]和[1024, 5])
         bbox_results = self._bbox_forward(x, rois)

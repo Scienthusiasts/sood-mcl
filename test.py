@@ -19,7 +19,7 @@ from mmrotate.datasets import build_dataset
 from mmrotate.models import build_detector
 from mmrotate.utils import compat_cfg, setup_multi_processes
 # yan:
-from semi_mmrotate.models.rotated_dt_baseline import RotatedDTBaseline
+from semi_mmrotate.models.rotated_dt_baseline_ss_orcnn_head import RotatedDTBaseline
 from semi_mmrotate.models.mcl import MCLTeacher
 from mmcv.image import tensor2imgs
 from mmdet.core import encode_mask_results

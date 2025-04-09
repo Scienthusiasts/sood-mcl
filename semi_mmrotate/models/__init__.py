@@ -11,4 +11,8 @@ from .rotated_arsl import RotatedARSL
 from .rotated_pseco import RotatedPseCo
 # yan
 from .roi_heads import *
-from .rotated_dt_baseline import RotatedDTBaseline
+from .rotated_dt_baseline_orcnn_head import RotatedDTBaseline
+from .rotated_dt_baseline_ss_orcnn_head import RotatedDTBaselineSS
+from .rotated_dt_baseline_ss_gi_head import RotatedDTBaselineGISS
+from .rotated_dense_teacher_ss import RotatedDenseTeacherSS
+from .mcl_ss import MCLTeacherSS
