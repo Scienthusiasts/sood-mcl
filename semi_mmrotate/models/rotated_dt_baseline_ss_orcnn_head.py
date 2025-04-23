@@ -159,7 +159,12 @@ class RotatedDTBaselineSS(RotatedSemiDetector):
         # [[bs, 256, h1, w1], ...], [[roi_nums, 5], ...], [[gt_nums], ...], [[gt_nums, 5], ...]
         # 注意 roi_head.forward_train接受的回归框坐标的格式是[cx, cy, w, h, a]
         # hproposal_list = copy.deepcopy(proposal_list)
-        roi_losses = self.student.roi_head.forward_train(sup_fpn_feat, format_data['sup']['gt_labels'], proposal_list, format_data['sup']['gt_bboxes'], format_data['sup']['gt_labels'])
+        roi_losses = self.student.roi_head.forward_train(
+            sup_fpn_feat, 
+            format_data['sup']['gt_labels'], 
+            proposal_list, format_data['sup']['gt_bboxes'], 
+            format_data['sup']['gt_labels']
+        )
         # 3.组织微调模块的损失
         for key, val in roi_losses.items():
             if key[:4] == 'loss':
@@ -467,7 +472,6 @@ class RotatedDTBaselineSS(RotatedSemiDetector):
                 if final_mask.sum() - rot_mask.sum() < 0:
                     o_decode_bboxes[:, 2:4] += 1
                     r_decode_bboxes[:, 2:4] += 1
-
                 ss_loss_box_all = riou_loss(o_decode_bboxes[rot_mask], r_decode_bboxes[rot_mask])
                 ss_loss_box = (o_weight_mask[rot_mask] * ss_loss_box_all)
                 # 去除掉那些负数的损失
@@ -478,6 +482,7 @@ class RotatedDTBaselineSS(RotatedSemiDetector):
                 print('='*100)
                 # 可视化RIoU
                 # vis_lvlriou(format_data[aug_orders[0]]['img'][1], o_decode_bboxes, r_decode_bboxes, img_name, 'vis_ro_branch_riou')
+
                 # 通过梯度截断引入非对称
                 # ss_loss_box = self.ss_symmetry_stop_grdient_box_loss(riou_loss, o_decode_bboxes, r_decode_bboxes, rot_mask, o_weight_mask)
 

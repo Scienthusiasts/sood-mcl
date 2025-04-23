@@ -37,10 +37,10 @@ loss_cls=dict(type='QualityFocalLoss', use_sigmoid=True, beta=2.0, loss_weight=1
 # bbox_head_type = 'SemiRotatedBLFCOSHead'
 # loss_cls=dict(type='FocalLoss', use_sigmoid=True, gamma=2.0, alpha=0.25, loss_weight=1.0)
 # just for debug:
-burn_in_steps = 50
+burn_in_steps = 6400
 # 是否导入权重
-load_from = '/data/yht/code/sood-mcl/log/dtbaseline/DOTA1.5/ss-branch/global-w_gihead/joint-score-sigmoid_burn-in-12800_gi-head_all-refine-loss_box-O2M-loss_detach_GA_ssloss-joint-jsd-dim0-w1.0/latest.pth' # 53.6 mAP
-# load_from = None
+# load_from = 'log/dtbaseline/DOTA1.5/ss-branch/global-w_gihead/joint-score-sigmoid_burn-in-12800_gi-head_all-refine-loss_box-O2M-loss_detach_GA_ssloss-joint-jsd-dim0-w1.0_reuse-nms-cls_modify-batch-nms_wo-interact/latest.pth' 
+load_from = None
 
 
 
@@ -112,6 +112,8 @@ detector = dict(
             target_means=(.0, .0, .0, .0, .0),
             target_stds=(0.1, 0.1, 0.2, 0.2, 0.1)),
         nc=nc,
+        # 'share_head' 'avg_pool' 'share_fchead'
+        roi_pooling = 'avg_pool', 
         assigner='HungarianWithIoUMatching',
     ),
     train_cfg=dict(

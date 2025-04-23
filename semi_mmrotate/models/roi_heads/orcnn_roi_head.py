@@ -98,7 +98,6 @@ class ORCNNRoIHead(RotatedStandardRoIHead):
                                                     gt_bboxes, gt_labels,
                                                     img_metas)
             losses.update(bbox_results['loss_bbox'])
-
         return losses
 
     def _bbox_forward_train(self, x, sampling_results, gt_bboxes, gt_labels,

@@ -156,29 +156,36 @@ def batch_nms(bboxes, cls_scores, centerness, score_thr=0.2):
     batch_det_bboxes, batch_det_labels, batch_det_scores = [], [], []
     # 对batch每张图片分别nms
     for i in range(bboxes.shape[0]):
+        # 异常处理, 舍弃那些面积等于0的框
+        area = bboxes[i, :, 2] * bboxes[i, :, 3]
+        correct_mask = area>0
+        correct_bboxes = bboxes[i][correct_mask]
+        correct_cls_scores = cls_scores[i][correct_mask]
+        correct_centerness = centerness[i][correct_mask]
+
         # multiclass_nms_rotated的输入需要包含背景类预测
-        padding = cls_scores[i].new_zeros(cls_scores[i].shape[0], 1)
-        cls_scores_w_bg = torch.cat([cls_scores[i], padding], dim=1)
+        padding = correct_cls_scores.new_zeros(correct_cls_scores.shape[0], 1)
+        cls_scores_w_bg = torch.cat([correct_cls_scores, padding], dim=1)
         '''nms'''
         # 输入: [total_box_num, 5], [total_box_num, 16] -> 输出: [nms_num, 6], [nms_num]
         det_bboxes, det_labels, thr_idx, nms_idx = multiclass_nms_rotated(
-            multi_bboxes=bboxes[i, :, :5],            # [total_box_num, 5]
+            multi_bboxes=correct_bboxes[:, :5],            # [total_box_num, 5]
             multi_scores=cls_scores_w_bg,                # [total_box_num, 16]
             score_thr=0.2,                               # 0.05
             nms={'iou_thr': 0.1},                        # {'iou_thr': 0.1}
             max_num=2000,                                # 2000
-            score_factors=centerness[i, :],            # centerness[i, :] bboxes[i, :, 5]
+            score_factors=correct_centerness,            # centerness[i, :] bboxes[i, :, 5]
             return_inds=True
             )
         # 保证每张图片一定会有一个pgt(置信度最大的那个)(否则微调模块不好搞定)
         if det_bboxes.shape[0]==0: 
-            max_idx = torch.argmax(bboxes[i, :, 5])
-            det_bboxes = bboxes[i, max_idx,:6].unsqueeze(0)
-            det_labels = bboxes[i, max_idx,-1].unsqueeze(0).long()
-            det_scores = cls_scores[i, max_idx, :].unsqueeze(0)
+            max_idx = torch.argmax(correct_bboxes[:, 5])
+            det_bboxes = correct_bboxes[max_idx,:6].unsqueeze(0)
+            det_labels = correct_bboxes[max_idx,-1].unsqueeze(0).long()
+            det_scores = correct_cls_scores[max_idx, :].unsqueeze(0)
         else:
             # 为什么索引是thr_idx // nc, 因为这个索引基于把所有类别都展平成1维了，需要除以类别数才是正确的索引
-            det_scores = cls_scores[i][thr_idx // nc][nms_idx]
+            det_scores = correct_cls_scores[thr_idx // nc][nms_idx]
 
         batch_det_bboxes.append(det_bboxes)
         batch_det_labels.append(det_labels)

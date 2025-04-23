@@ -153,10 +153,11 @@ class RotatedDTBaselineGISS(RotatedSemiDetector):
             # 本来只包括坐标, 现在连score也加进去:
             proposal_list.append(rbb_preds[i, :, :6])
 
-        # 3.送入roi head进行微调
+        # 2.送入roi head进行微调
         # 注意 roi_head.forward_train接受的回归框坐标的格式是[cx, cy, w, h, a]
         roi_losses = self.student.roi_head.loss(
             sup_fpn_feat, 
+            # 加了detach(没加)
             rbb_preds, flatten_cls_scores.reshape(bs, -1, self.nc), flatten_centerness.reshape(bs, -1),
             format_data['sup']['gt_bboxes'], format_data['sup']['gt_labels'],
             format_data['sup'],
@@ -166,7 +167,7 @@ class RotatedDTBaselineGISS(RotatedSemiDetector):
         # 有监督分支可视化微调模块的推理结果(一般情况下注释)
         # vis_sup_bboxes_batch(self.teacher, format_data['sup'], bs, self.nc, flatten_cls_scores.reshape(bs, -1, self.nc).detach(), sup_fpn_feat, rbb_preds, './vis_res_wo_nms')
         
-        # 4.组织微调模块的损失
+        # 3.组织微调模块的损失
         for key, val in roi_losses.items():
             if key[:4] == 'loss':
                 losses[f"{key}_refine_sup"] = self.sup_weight * val

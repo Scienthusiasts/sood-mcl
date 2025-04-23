@@ -8,26 +8,31 @@ from .rotated_semi_detector import RotatedSemiDetector
 from mmrotate.models.builder import ROTATED_DETECTORS
 from mmrotate.models import build_detector
 # yan 
+import copy
+import os
+import cv2
 from mmrotate.models import ROTATED_LOSSES, build_loss
 from mmrotate.core import rbbox2result, poly2obb_np, obb2poly, poly2obb, build_bbox_coder, obb2xyxy
 from mmdet.core.anchor.point_generator import MlvlPointGenerator
+from  mmdet.core.bbox.samplers.sampling_result import SamplingResult
 from custom.utils import *
 from custom.visualize import *
+from torchvision.transforms import InterpolationMode
 from custom.loss import QFLv2, BCELoss, JSDivLoss
 # 计算IoU Loss
 from mmcv.ops import diff_iou_rotated_2d
 
-# prototype实例
-# from .prototype.prototype_scalewise import FCOSPrototype
-# from .prototype.prototype import FCOSPrototype
+from loguru import logger
+import torch.distributed as dist
 
 
 
 
 @ROTATED_DETECTORS.register_module()
-class RotatedDTBaseline(RotatedSemiDetector):
+# GI的意思是group interactive, 即将之前的二阶段orcnn-roihead换成group proposals之间存在交互的roihead
+class RotatedDTBaselineGI(RotatedSemiDetector):
     def __init__(self, model: dict, prototype:dict, semi_loss, train_cfg=None, test_cfg=None, symmetry_aware=False, pretrained=None):
-        super(RotatedDTBaseline, self).__init__(
+        super(RotatedDTBaselineGI, self).__init__(
             dict(teacher=build_detector(model), student=build_detector(model)),
             semi_loss,
             train_cfg=train_cfg,
@@ -91,7 +96,7 @@ class RotatedDTBaseline(RotatedSemiDetector):
 
 
     def forward_train(self, imgs, img_metas, **kwargs):
-        super(RotatedDTBaseline, self).forward_train(imgs, img_metas, **kwargs)
+        super(RotatedDTBaselineGI, self).forward_train(imgs, img_metas, **kwargs)
         gt_bboxes = kwargs.get('gt_bboxes')
         gt_labels = kwargs.get('gt_labels')
         # preprocess
@@ -126,14 +131,14 @@ class RotatedDTBaseline(RotatedSemiDetector):
         sup_losses, flatten_labels, flatten_centerness, flatten_cls_scores, flatten_bbox_preds, flatten_angle_preds = sup_losses_and_data
         # 调整拼接顺序
         flatten_cls_scores = self.rearrange_order(bs, flatten_cls_scores).sigmoid()
+        flatten_cls_labels = torch.argmax(flatten_cls_scores, dim=1, keepdim=True)
         flatten_centerness = self.rearrange_order(bs, flatten_centerness).sigmoid()
         flatten_bbox_preds = self.rearrange_order(bs, flatten_bbox_preds)
         flatten_angle_preds = self.rearrange_order(bs, flatten_angle_preds)
         # 获得联合置信度
         flatten_joint_score = torch.einsum('ij, i -> ij', flatten_cls_scores, flatten_centerness).max(dim=-1)[0].unsqueeze(1)
-        # [bs, total_anchor_num, 6=(cx, cy, w, h, θ, joint_score)] 这里的 cx, cy, w, h, θ格式还不对, 还需要解码
-        rbb_preds = torch.cat([flatten_bbox_preds, flatten_angle_preds, flatten_joint_score], dim=-1).reshape(bs, -1, 6)
-
+        # [bs, total_anchor_num, 7=(cx, cy, w, h, θ, joint_score, label)] 这里的 cx, cy, w, h, θ格式还不对, 还需要解码
+        rbb_preds = torch.cat([flatten_bbox_preds, flatten_angle_preds, flatten_joint_score, flatten_cls_labels], dim=-1).reshape(bs, -1, 7)
         '''有监督分支进行预测框去噪微调'''
         # NOTE:Ablation1: 断开refine-head与主体检测器的梯度
         sup_fpn_feat = [fpn_feat.detach() for fpn_feat in sup_fpn_feat]
@@ -146,52 +151,30 @@ class RotatedDTBaseline(RotatedSemiDetector):
         proposal_list = []
         for i in range(bs):
             # 本来只包括坐标, 现在连score也加进去:
-            proposal_list.append(rbb_preds[i, :, :])
+            proposal_list.append(rbb_preds[i, :, :6])
+
         # 2.送入roi head进行微调
-        # TODO: 有一个问题, 调用forward_train函数时, 会再执行一次正负样本分配而不是采用已经分好的组
-        # [[bs, 256, h1, w1], ...], [[roi_nums, 5], ...], [[gt_nums], ...], [[gt_nums, 5], ...]
         # 注意 roi_head.forward_train接受的回归框坐标的格式是[cx, cy, w, h, a]
-        # hproposal_list = copy.deepcopy(proposal_list)
-        roi_losses = self.student.roi_head.forward_train(
+        roi_losses = self.student.roi_head.loss(
             sup_fpn_feat, 
-            format_data['sup']['gt_labels'], 
-            proposal_list, 
-            format_data['sup']['gt_bboxes'], 
-            format_data['sup']['gt_labels']
-        )
+            # 加了detach(没加)
+            rbb_preds, flatten_cls_scores.reshape(bs, -1, self.nc), flatten_centerness.reshape(bs, -1),
+            format_data['sup']['gt_bboxes'], format_data['sup']['gt_labels'],
+            format_data['sup'],
+            train_mode='train_sup'
+            )
+
+        # 有监督分支可视化微调模块的推理结果(一般情况下注释)
+        # vis_sup_bboxes_batch(self.teacher, format_data['sup'], bs, self.nc, flatten_cls_scores.reshape(bs, -1, self.nc).detach(), sup_fpn_feat, rbb_preds, './vis_res_wo_nms')
+        
         # 3.组织微调模块的损失
         for key, val in roi_losses.items():
             if key[:4] == 'loss':
                 losses[f"{key}_refine_sup"] = self.sup_weight * val
             else:
                 losses[key] = val
-                
 
 
-        '''有监督分支更新prototypes'''
-        # # 对输出的特征进行reshape [bs * total_anchor_num, dim]
-        # sup_fpn_feat = convert_shape_single(sup_fpn_feat, dim=256)
-        # # 调整拼接顺序
-        # flatten_centerness = self.rearrange_order(bs, flatten_centerness).sigmoid()
-        # flatten_cls_scores = self.rearrange_order(bs, flatten_cls_scores).sigmoid()
-        # flatten_joint_score = torch.einsum('ij, i -> ij', flatten_cls_scores, flatten_centerness)
-        # cat_mask = self.rearrange_order(bs, flatten_labels)
-        # # 获取每一个尺度的特征索引(batch无关)
-        # # lvl_idx = self.extract_scale_order(bs)
-        # # 更新prototype
-        # # prototype_loss = self.prototype(sup_fpn_feat.clone().detach(), cat_mask, lvl_idx)
-        # prototype_loss = self.prototype(sup_fpn_feat, cat_mask, flatten_cls_scores, flatten_centerness, 'sup')
-        # losses["loss_prototype_sup"] = self.sup_weight * prototype_loss
-
-        # # # 可视化(only for experimental validation)
-        # # with torch.no_grad():
-        # #     pos_mask = (cat_mask >= 0) & (cat_mask < self.nc) 
-        # #     # 获取图像文件名和图像
-        # #     batch_img_names = [img_metas['ori_filename'] for img_metas in format_data['sup']['img_metas']]
-        # #     batch_imgs = format_data['sup']['img']
-        # #     # 可视化
-        # #     # self.prototype.vis_heatmap(sup_fpn_feat.data, batch_imgs, batch_img_names, pos_mask, lvl_idx, flatten_centerness, flatten_cls_scores)
-        # #     self.prototype.vis_heatmap(sup_fpn_feat.data, batch_imgs, batch_img_names, pos_mask, flatten_centerness, flatten_cls_scores)
 
 
         # 组织全监督损失
@@ -231,9 +214,6 @@ class RotatedDTBaseline(RotatedSemiDetector):
 
 
 
-
-
-
             '''无监督分支前向, 得到特征图和推理结果'''
             with torch.no_grad():
                 # get teacher data
@@ -245,7 +225,7 @@ class RotatedDTBaseline(RotatedSemiDetector):
             student_logits, s_fpn_feat = self.student.forward_train(return_fpn_feat=True, fpn_feat_grad=True, get_data=True, **format_data[aug_orders[0]])
             student_logits = list(student_logits)
             student_logits.append(s_fpn_feat)
-
+            
 
             '''去除旋转一致性自监督学习的格式调整'''
             s_ori_logits = student_logits
@@ -254,38 +234,9 @@ class RotatedDTBaseline(RotatedSemiDetector):
 
 
 
-
-
-
-            '''无监督分支更新prototypes'''
-            # t_cls_scores, t_cnt_scores = teacher_logits[0], teacher_logits[3]
-            # # t_cls_scores, t_cnt_scores = student_logits[0], student_logits[3]
-            # # 对输出的特征进行reshape [bs * total_anchor_num, dim]
-            # t_cls_scores = convert_shape_single(t_cls_scores, dim=self.nc).sigmoid()
-            # t_cnt_scores = convert_shape_single(t_cnt_scores, dim=1).sigmoid()
-            # t_fpn_feat = convert_shape_single(t_fpn_feat, dim=256)
-
-            # # 返回prototype loss, 以及refine的score shape均为 [bs*total_anchor_num, cat_num]
-            # prototype_loss, refine_t_joint_score, refine_t_cls_score = self.prototype(t_fpn_feat, None, t_cls_scores, t_cnt_scores, 'unsup')
-            # # prototype损失(如果有的话)
-            # losses["loss_prototype_unsup"] = unsup_weight * prototype_loss
-            # # 替换teacher的score为refine的特征
-            # # teacher_logits[0] = refine_t_cls_score
-            # teacher_logits.append(refine_t_joint_score)
-
-            # # # 可视化(only for experimental validation)
-            # # with torch.no_grad():
-            # #     # 获取图像文件名和图像
-            # #     batch_img_names = [img_metas['ori_filename'] for img_metas in format_data['unsup_weak']['img_metas']]
-            # #     batch_imgs = format_data['unsup_weak']['img']
-            # #     # 可视化
-            # #     self.prototype.vis_heatmap_unsup(t_fpn_feat.data, batch_imgs, batch_img_names, t_cnt_scores, t_cls_scores)
-
-
-
             '''无监督分支'''
             # weight_mask旋转自监督分支会用到
-            unsup_losses, weight_mask = self.semi_loss(self.student, self.teacher, reshape_t_logits, reshape_s_ori_logits, s_ori_logits, teacher_logits, bs, img_metas=format_data[aug_orders[1]], stu_img_metas=format_data[aug_orders[0]])
+            unsup_losses, weight_mask = self.semi_loss(self.student, self.teacher, reshape_t_logits, reshape_s_ori_logits, s_ori_logits, teacher_logits, bs, sup_img_metas=format_data[aug_orders[1]], unsup_img_metas=format_data[aug_orders[0]])
             # 组织无监督损失
             for key, val in self.logit_specific_weights.items():
                 if key in unsup_losses.keys():
@@ -299,8 +250,8 @@ class RotatedDTBaseline(RotatedSemiDetector):
 
 
         self.iter_count += 1
-
         return losses
+
 
 
 

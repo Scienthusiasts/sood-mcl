@@ -167,9 +167,7 @@ class RotatedDTBLGIHeadLoss(nn.Module):
 
         '''对stundent的预测调整为gi_head接受的格式'''
         s_cls_labels = torch.argmax(s_cls_scores, dim=1, keepdim=True)
-        s_cls_scores = s_cls_scores.sigmoid()
-        s_centernesses = s_centernesses.sigmoid()
-        s_joint_score = torch.einsum('ij, i -> ij', s_cls_scores, s_centernesses.squeeze(1)).max(dim=-1)[0].unsqueeze(1)
+        s_joint_score = torch.einsum('ij, i -> ij', s_cls_scores.sigmoid(), s_centernesses.sigmoid().squeeze(1)).max(dim=-1)[0].unsqueeze(1)
         # [bs, total_anchor_num, 7=(cx, cy, w, h, θ, joint_score, label)] 这里的 cx, cy, w, h, θ格式还不对, 还需要解码
         s_rbb_preds = torch.cat([s_bbox_preds, s_joint_score, s_cls_labels], dim=-1).reshape(bs, -1, 7)
         # NOTE:Ablation1: 断开refine-head与主体检测器的梯度
@@ -191,20 +189,18 @@ class RotatedDTBLGIHeadLoss(nn.Module):
         # 注意 roi_head.forward_train接受的回归框坐标的格式是[cx, cy, w, h, a]
         roi_losses = student.roi_head.loss(
             stu_fpn_feat, 
-            s_rbb_preds, s_cls_scores.reshape(bs, -1, self.nc), s_centernesses.reshape(bs, -1),
+            s_rbb_preds, s_cls_scores.sigmoid().reshape(bs, -1, self.nc), s_centernesses.sigmoid().reshape(bs, -1),
             # teacher的你结果是作为gt
             nms_t_bboxes_list, nms_t_labels_list,
             unsup_img_metas,
             train_mode='train_unsup'
             )
         '''teacher roihead的微调结果给student一阶段学习'''
-        t_cls_scores = t_cls_scores.sigmoid()
-        t_centernesses = t_centernesses.sigmoid()
         with torch.no_grad():
             batch_preds = teacher.roi_head.infer(
                 # t_fpn_feat:
                 teacher_logits[4], 
-                t_rbb_preds, t_cls_scores.reshape(bs, -1, self.nc), t_centernesses.reshape(bs, -1),
+                t_rbb_preds, t_cls_scores.sigmoid().reshape(bs, -1, self.nc), t_centernesses.sigmoid().reshape(bs, -1),
                 unsup_img_metas,
                 )
             batch_t_res_bboxes, batch_t_res_labels = [], []

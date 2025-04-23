@@ -70,7 +70,28 @@ class ShareHead(nn.Module):
 
 
 
+class ShareFCHead(nn.Module):
+    '''Head部分回归和分类之前的共享特征提取层(目的是将ROI的7x7压缩到1x1)
+    '''
+    def __init__(self, channel):
+        super(ShareFCHead, self).__init__()
+        self.fc1 = nn.Sequential(
+            nn.Linear(256*7*7, channel),
+            build_norm_layer(dict(type='LN'), channel)[1],
+            nn.ReLU(inplace=False),
+        )
+        self.fc2 = nn.Linear(channel, channel)
+        # 权重初始化
+        init_weights(self.fc1, 'normal', 0, 0.01)
+        init_weights(self.fc2, 'normal', 0, 0.01)
 
+    def forward(self, x):
+        # 输入形状: [total_roi_nums, 256, 7, 7]
+        total_roi_nums = x.shape[0]
+        x = x.view(total_roi_nums, -1)
+        x = self.fc1(x)
+        x = self.fc2(x)
+        return x   
 
 
 
@@ -83,6 +104,7 @@ class GIRoIHead(BaseModule):
                  bbox_roi_extractor,
                  bbox_coder,
                  nc,
+                 roi_pooling = 'avg_pool', # 'share_head
                  assigner='HungarianWithIoUMatching',
                  **wargs
                  ):
@@ -102,7 +124,12 @@ class GIRoIHead(BaseModule):
         self.reg_loss = build_loss(dict(type='RotatedIoULoss', reduction='none', mode='log'))
         self.cls_loss = QFLv2()
         # 将roi的7x7压缩到1x1
-        self.roi_conv = ShareHead(channel=self.hidden_dim)
+        if roi_pooling == 'share_head':
+            self.roi_pooling = ShareHead(channel=self.hidden_dim)
+        if roi_pooling == 'share_fchead':
+            self.roi_pooling = ShareFCHead(channel=self.hidden_dim)
+        if roi_pooling == 'avg_pool':
+            self.roi_pooling = nn.AdaptiveAvgPool2d(1)
         self.attention = MultiheadAttention(embed_dims=self.hidden_dim, num_heads=8, dropout=0.0, batch_first=True)
         self.attention_norm = build_norm_layer(dict(type='LN'), self.hidden_dim)[1]
         self.ffn = FFN(embed_dims=self.hidden_dim, feedforward_channels=2048)
@@ -191,7 +218,7 @@ class GIRoIHead(BaseModule):
         """
         # 1.nms(至少会保留一个置信度最大的box): 
         # list([post_nms_num, 6=(cx, cy, w, h, θ, score)], ..., [...]) list([post_nms_num], [...]) list([post_nms_num, cls_num], [...])
-        batch_nms_bboxes, batch_nms_labels, batch_nms_scores = batch_nms(rbb_preds, cls_score, centerness, score_thr=0.15)
+        batch_nms_bboxes, batch_nms_labels, batch_nms_scores = batch_nms(rbb_preds, cls_score, centerness, score_thr=0.2)
         if self.mode in ['train_sup', 'train_unsup']:
             # 如果存在有GTBox和任何NMSBox的IoU都为0, 则把这个GTBox加入到NMSBox中(仅在训练时调用)(后续还得处理变成NMSBox的GTBox又没有其他densebox和它一个group的情况)
             batch_nms_bboxes, batch_nms_labels, batch_nms_scores = multi_apply(self.add_GT2NMS_boxes_single, batch_nms_bboxes, batch_nms_labels, batch_nms_scores, gt_bboxes, gt_labels, img_meta['img_metas'])
@@ -211,6 +238,8 @@ class GIRoIHead(BaseModule):
         # TODO: 目前是组内交互, 只是局部交互. 是否需要加入全局交互, 即对nms_roi_feats之间的交互?)
         # 只取每个组的第一个预测作为query, 简化运算(这个预测代表每个group中最好的预测, 这个预测和其他预测交互就行了, 其他无所谓)
         # MHSA + LN:  out = Q = [total_group_nums, 1, 256], k = v = [total_group_nums, nums_per_group, 256]
+        # TODO: 位置编码
+        # TODO: query 试试learnable
         represent_roi_feat = dense_roi_feats[:, 0, :].unsqueeze(1)
         represent_interative_roi_feat = self.attention_norm(self.attention(query=represent_roi_feat, key=dense_roi_feats, value=dense_roi_feats))
         # TODO:加一个类似SparseRCNN里的动态卷积(输入是dense_roi_feats和nms_roi_feats)?
@@ -233,6 +262,7 @@ class GIRoIHead(BaseModule):
         '''接下来就是nms_roi_feats和dense_roi_feats如何交互了'''
         # [total_group_nums, nums_per_group, 256], [total_group_nums, 256] -> [total_group_nums, 256]
         represent_interative_roi_feat = self.group_interact_forward(dense_roi_feats, nms_roi_feats).squeeze(1)
+        # represent_interative_roi_feat = nms_roi_feats
         # FFN [total_group_nums, 1, 256]
         represent_interative_roi_feat = self.ffn_norm(self.ffn(represent_interative_roi_feat))
 
@@ -282,8 +312,8 @@ class GIRoIHead(BaseModule):
         dense_roi_feats = self.bbox_roi_extractor(fpn_feat, dense_rois)
         nms_roi_feats = self.bbox_roi_extractor(fpn_feat, nms_rois)
         # 将roi_feat处理成1维 [total_group_nums, nums_per_group, 256]
-        dense_roi_feats = self.roi_conv(dense_roi_feats).reshape(-1, 8, self.hidden_dim)
-        nms_roi_feats = self.roi_conv(nms_roi_feats).reshape(-1, self.hidden_dim)
+        dense_roi_feats = self.roi_pooling(dense_roi_feats).reshape(-1, 8, self.hidden_dim)
+        nms_roi_feats = self.roi_pooling(nms_roi_feats).reshape(-1, self.hidden_dim)
 
         '''bboxhead(包含特征交互和分类回归)'''
         # 输出的dense_roi_feats已经经过交互 (cls_score, reg_delta则是未解码的原始特征, 不是最终预测结果)
@@ -330,9 +360,9 @@ class GIRoIHead(BaseModule):
             diff_iou = (refine_iou-nms_iou).mean()
 
         # 可视nms_bboxes和gi_head输出的bboxes对比(默认注释)
-        # if self.mode=='train_unsup':
-        #     all_bboxes_preds = self.bbox_coder.decode(match_pred_gt_bboxes[0], reg_delta)
-        #     vis_gi_head_bboxes_batch(img_meta, len(batch_nms_bboxes), batch_idx, match_pred_gt_bboxes[0], all_bboxes_preds, './vis_gi_bboxes_unsup')
+        # if self.mode=='train_sup':
+        #     all_bboxes_preds = self.bbox_coder.decode(match_pred_gt_bboxes[0][valid_gt_mask], reg_delta[valid_gt_mask])
+        #     vis_gi_head_bboxes_batch(img_meta, len(batch_nms_bboxes), batch_idx[valid_gt_mask], match_pred_gt_bboxes[0][valid_gt_mask], all_bboxes_preds, './vis_gi_bboxes_unsup')
 
         #     vis_cls_score = cls_score.sigmoid()
         #     cat_nms_scores = torch.cat(batch_nms_scores, dim=0)
@@ -373,8 +403,8 @@ class GIRoIHead(BaseModule):
         nms_bboxes = torch.cat(batch_nms_bboxes)
         gi_bboxes = self.bbox_coder.decode(nms_bboxes, reg_delta)
         # TODO:这里感觉预测的cls_score很有问题(负样本的噪声很大)，因此还是用nms的score
-        # cls_score = cls_score.sigmoid()
-        cls_score = nms_scores
+        cls_score = cls_score.sigmoid()
+        # cls_score = nms_scores
         
         last_batch_num = 0
         batch_gi_box = []
@@ -384,17 +414,15 @@ class GIRoIHead(BaseModule):
             single_gi_bboxes = gi_bboxes[last_batch_num:last_batch_num+cur_batch_num]
             cls_scores = cls_score[last_batch_num:last_batch_num+cur_batch_num]
             single_cls_scores, single_cls_preds = torch.max(cls_scores, dim=1)
-            pos_mask = single_cls_scores>0.2
-            if pos_mask.sum()==0:
-                pos_mask = single_cls_scores>0
+
             last_batch_num += cur_batch_num
             # [nms_box_num, 7=(cx, cy, w, h, θ, cls_score, cls_label)]
-            batch_gi_box.append(torch.cat([single_gi_bboxes[pos_mask], single_cls_scores[pos_mask].unsqueeze(1), single_cls_preds[pos_mask].unsqueeze(1)], dim=1))
+            batch_gi_box.append(torch.cat([single_gi_bboxes, single_cls_scores.unsqueeze(1), single_cls_preds.unsqueeze(1)], dim=1))
 
-            # 可视化
+            # # 可视化
             # vis_nms_scores = torch.cat(batch_nms_scores, dim=0)
             # vis_HM_scores(cls_scores.unsqueeze(0), vis_nms_scores.unsqueeze(0), img_meta, './vis_unsup_infer_score')
-            # 可视nms_bboxes和gi_head输出的bboxes对比(默认注释)
+            # # 可视nms_bboxes和gi_head输出的bboxes对比(默认注释)
             # vis_gi_head_bboxes_single(img_meta['img'][batch], img_meta['img_metas'][batch]['ori_filename'], single_nms_boxes, single_gi_bboxes, './vis_gi_bboxes_infer')
         return batch_gi_box
 

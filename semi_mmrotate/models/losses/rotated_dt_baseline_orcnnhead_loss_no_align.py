@@ -165,7 +165,7 @@ class RotatedDTBLORCNNHeadLoss(nn.Module):
         # 注意cls_scores和centernesses都是未经过sigmoid()的logits
         t_cls_scores, t_bbox_preds, t_centernesses, _ = reshape_t_logits
         s_cls_scores, s_bbox_preds, s_centernesses, _ = reshape_s_logits
-        refine_t_joint_score = teacher_logits[-1]
+        # refine_t_joint_score = teacher_logits[-1]
 
         """多对一匹配进行伪标签学习"""
         # 0.decode + nms + 分组
@@ -191,7 +191,6 @@ class RotatedDTBLORCNNHeadLoss(nn.Module):
         roi_losses = student.roi_head.forward_train(stu_fpn_feat, nms_t_labels_list, all_t_proposal_list, nms_t_bboxes_list, nms_t_labels_list)
         # 2.组织微调模块的损失
         loss_bbox_refine_unsup, loss_cls_refine_unsup, acc_unsup = roi_losses['loss_bbox'], roi_losses['loss_cls'], roi_losses['acc']
-
         '''teacher roihead的微调结果给student一阶段学习'''
         # 1.送入refine head微调(其实相当于一个二阶段检测器的检测头)
         batch_t_res_bboxes, batch_t_res_labels = [], []
@@ -232,7 +231,7 @@ class RotatedDTBLORCNNHeadLoss(nn.Module):
         k = self.p_selection.get('k', 0.01)
         beta = self.p_selection.get('beta', 1.0)
         with torch.no_grad():
-            pos_mask, neg_mask, weight_mask, fg_num, S_dps = self.pseudoLabelSelection(mode, teacher_logits, t_cls_scores, t_bbox_preds, t_centernesses, k, beta, refine_t_joint_score)
+            pos_mask, neg_mask, weight_mask, fg_num, S_dps = self.pseudoLabelSelection(mode, teacher_logits, t_cls_scores, t_bbox_preds, t_centernesses, k, beta)
 
         '''损失'''
         # 无监督分类损失QFLv2 (without ignore region)
@@ -343,34 +342,3 @@ class RotatedDTBLORCNNHeadLoss(nn.Module):
         nms_bboxes, nms_labels = batch_nms_bboxes[0], batch_nms_labels[0]
 
         return nms_bboxes, nms_labels, t_results
-
-
-
-
-
-
-
-
-def wbf_aggregating(group_ids_mask, prenms_bboxes, pbox_nums):
-    '''类似WBF的方法进行融合
-    '''
-    # group里的框进行聚类每个group都得到一个聚类中心(貌似聚类后的框也不比单纯nms后的框效果好)
-    cluster_center_bboxes = []
-    for group_id in range(pbox_nums):
-        group_mask = group_ids_mask == group_id
-        group_bboxes = prenms_bboxes[group_mask]
-        # 5参转8参表示法(group)
-        group_poly_boxes = obb2poly(group_bboxes[:, :5])
-        group_score = group_bboxes[:, 5]
-        # WBF后的框
-        weighted_group_bboxes = group_poly_boxes * group_score.unsqueeze(1) / group_score.sum()
-        weighted_mean_bboxes = weighted_group_bboxes.sum(dim=0).unsqueeze(0)
-        cluster_center_bboxes.append(weighted_mean_bboxes)
-    cluster_center_bboxes = torch.cat(cluster_center_bboxes, dim=0)
-    # 8参转5参表示法(group)
-    cluster_center_bboxes = poly2obb(cluster_center_bboxes)
-    return cluster_center_bboxes
-
-
-
-

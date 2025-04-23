@@ -112,6 +112,8 @@ detector = dict(
             target_means=(.0, .0, .0, .0, .0),
             target_stds=(0.1, 0.1, 0.2, 0.2, 0.1)),
         nc=nc,
+        # 'share_head' 'avg_pool' 'share_fchead'
+        roi_pooling = 'avg_pool', 
         assigner='HungarianWithIoUMatching',
     ),
     train_cfg=dict(
