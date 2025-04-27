@@ -14,6 +14,7 @@ from mmrotate.models.dense_heads.rotated_anchor_free_head import RotatedAnchorFr
 import matplotlib.pyplot as plt
 import os
 import numpy as np
+import torch.distributed as dist
 
 INF = 1e8
 
@@ -312,8 +313,9 @@ class SemiRotatedBLFCOSHead(RotatedAnchorFreeHead):
         num_pos = torch.tensor(
             len(pos_inds), dtype=torch.float, device=bbox_preds[0].device)
         num_pos = max(reduce_mean(num_pos), 1.0)
+        # flatten_labels得统一转换成flatten_labels否则报错
         loss_cls = self.loss_cls(
-            flatten_cls_scores, flatten_labels, avg_factor=num_pos)
+            flatten_cls_scores, flatten_labels.long(), avg_factor=num_pos)
 
         pos_bbox_preds = flatten_bbox_preds[pos_inds]
         pos_angle_preds = flatten_angle_preds[pos_inds]
@@ -325,7 +327,15 @@ class SemiRotatedBLFCOSHead(RotatedAnchorFreeHead):
         centerness_denorm = max(
             reduce_mean(pos_centerness_targets.sum().detach()), 1e-6)
 
-        if len(pos_inds) > 0:
+        # NOTE: 使用dist.all_reduce同步操作, 当某张卡上不存在正样本时，所有卡都采用无正样本的loss计算方式
+        # has_pos 判断当前gpu上是否有正样本
+        has_pos = torch.tensor(len(pos_inds)>0, dtype=torch.int32, device=pos_bbox_preds.device)
+        # if len(pos_inds) < 10: has_pos = torch.tensor(0, dtype=torch.int32, device=pos_bbox_preds.device)
+        local_has_pos = has_pos.clone()
+        # 进行多卡之间通信, 此时has_pos数值为所有gpu上has_pos的值之和, 当所有卡上都有正样本时has_pos == dist.get_world_size(), 否则不等
+        dist.all_reduce(has_pos, op=dist.ReduceOp.SUM)
+
+        if has_pos == dist.get_world_size():
             pos_points = flatten_points[pos_inds]
             if self.separate_angle:
                 bbox_coder = self.h_bbox_coder
@@ -350,10 +360,13 @@ class SemiRotatedBLFCOSHead(RotatedAnchorFreeHead):
             loss_centerness = self.loss_centerness(
                 pos_centerness, pos_centerness_targets, avg_factor=num_pos)
         else:
-            loss_bbox = pos_bbox_preds.sum()
-            loss_centerness = pos_centerness.sum()
+            # weight当某张卡上无正样本时, 保证其他卡上的损失为0
+            weight = 1 - local_has_pos
+            loss_bbox = pos_bbox_preds.sum() * weight
+            loss_centerness = pos_centerness.sum() * weight
             if self.separate_angle:
-                loss_angle = pos_angle_preds.sum()
+                loss_angle = pos_angle_preds.sum() * weight
+            print(f"local_has_pos:{local_has_pos}, loss_bbox:{loss_bbox}")
         
         # loss以字典形式返回 
         # NOTE: added by yan, 返回flatten_labels, 计算prototype会用到

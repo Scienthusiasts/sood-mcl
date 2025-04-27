@@ -17,6 +17,7 @@ val_image_dir =         f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/val/i
 val_label_dir =         f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/val/{version}/annfiles'
 test_image_dir =        f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/test/images'
 
+angle_version = 'le90'
 # 类别数
 nc = 16
 # 伪标签筛选超参
@@ -24,11 +25,8 @@ semi_loss = dict(type='RotatedDTBLGIHeadLoss', cls_channels=nc, loss_type='origi
                  # 'topk', 'top_dps', 'catwise_top_dps', 'global_w', 'sla'
                  p_selection = dict(mode='global_w', k=0.01, beta=2.0),
                 #  p_selection = dict(mode='sla', k=0.01, beta=1.0),
-                 # 蒸馏超参数  'kld', 'l2', 'qflv2'
-                 distill = dict(mode='l2', beta=1.0, loss_weight=1.0),
                  )
-# prototype原型
-prototype = dict(cat_nums=nc, mode='ema', loss_weight = 1.)
+
 # 无监督分支权重
 unsup_loss_weight = 1.0
 # 是否使用高斯椭圆标签分配 (注意GA分配得搭配QualityFocalLoss)
@@ -36,11 +34,58 @@ bbox_head_type = 'SemiRotatedBLFCOSGAHead'
 loss_cls=dict(type='QualityFocalLoss', use_sigmoid=True, beta=2.0, loss_weight=1.0, activated=True)
 # bbox_head_type = 'SemiRotatedBLFCOSHead'
 # loss_cls=dict(type='FocalLoss', use_sigmoid=True, gamma=2.0, alpha=0.25, loss_weight=1.0)
+
+# 是否开启选择一致性自监督分支
+use_ss_branch=True
+ss_branch = dict(
+    nc=nc,
+    rand_angle_range=[45, 135], 
+    flip_p=0.0, 
+    score_interpolate_mode='nearest',
+    box_interpolate_mode='nearest',
+)
+
+# 是否开启refine head
+use_refine_head=True
+# refine head具体参数:如果 use_refine_head=False, 则roi_head=None
+roi_head=dict(
+    type='GIRoIHead', # ORCNNRoIHead GIRoIHead
+    bbox_roi_extractor=dict(
+        type='RotatedSingleRoIExtractor',
+        roi_layer=dict(
+            type='RoIAlignRotated',
+            out_size=7,
+            sample_num=2,
+            clockwise=True),
+        out_channels=256,
+        featmap_strides=[8, 16, 32, 64, 128]),
+    bbox_coder=dict(
+        type='DeltaXYWHAOBBoxCoder',
+        angle_range=angle_version,
+        norm_factor=None,
+        edge_swap=True,
+        proj_xy=True,
+        target_means=(.0, .0, .0, .0, .0),
+        target_stds=(0.1, 0.1, 0.2, 0.2, 0.1)),
+    nc=nc,
+    # 'share_head' 'avg_pool' 'share_fchead'
+    roi_pooling = 'avg_pool', 
+    assigner='HungarianWithIoUMatching',
+)
+# use_refine_head=False
+# roi_head=None
+
+
+
+
+
+
+
 # just for debug:
-burn_in_steps = 6400
+burn_in_steps = 50
 # 是否导入权重
-# load_from = 'log/dtbaseline/DOTA1.5/ss-branch/global-w_gihead/joint-score-sigmoid_burn-in-12800_gi-head_all-refine-loss_box-O2M-loss_detach_GA_ssloss-joint-jsd-dim0-w1.0_reuse-nms-cls_modify-batch-nms_wo-interact/latest.pth' 
-load_from = None
+load_from = '/data/yht/code/sood-mcl/log/dtbaseline/DOTA1.5/ss-branch/global-w_gihead/joint-score-sigmoid_burn-in-12800_gi-head_all-refine-loss_box-O2M-loss_GA_detach-fpnfeat_ssloss-joint-jsd-dim0-w1.0_avgpoolroi/latest.pth' 
+# load_from = None
 
 
 
@@ -48,7 +93,7 @@ load_from = None
 
 
 
-angle_version = 'le90'
+
 # model settings
 detector = dict(
     type='SemiRotatedBLRefineFCOS',
@@ -92,30 +137,7 @@ detector = dict(
             type='CrossEntropyLoss', use_sigmoid=True, loss_weight=1.0)),
     # 这部分充当去噪微调模块:
     # (roi_head, train_cfg, test_cfg): reference: /data/yht/code/sood-mcl/mmrotate-0.3.4/configs/oriented_rcnn/oriented_rcnn_r50_fpn_1x_dota_le90.py
-    roi_head=dict(
-        type='GIRoIHead', # ORCNNRoIHead GIRoIHead
-        bbox_roi_extractor=dict(
-            type='RotatedSingleRoIExtractor',
-            roi_layer=dict(
-                type='RoIAlignRotated',
-                out_size=7,
-                sample_num=2,
-                clockwise=True),
-            out_channels=256,
-            featmap_strides=[8, 16, 32, 64, 128]),
-        bbox_coder=dict(
-            type='DeltaXYWHAOBBoxCoder',
-            angle_range=angle_version,
-            norm_factor=None,
-            edge_swap=True,
-            proj_xy=True,
-            target_means=(.0, .0, .0, .0, .0),
-            target_stds=(0.1, 0.1, 0.2, 0.2, 0.1)),
-        nc=nc,
-        # 'share_head' 'avg_pool' 'share_fchead'
-        roi_pooling = 'avg_pool', 
-        assigner='HungarianWithIoUMatching',
-    ),
+    roi_head=roi_head,
     train_cfg=dict(
         rpn=dict(
             assigner=dict(
@@ -180,8 +202,12 @@ detector = dict(
 model = dict(
     type="RotatedDTBaselineGISS",
     model=detector,
-    # newly added
-    prototype=prototype,
+    nc=nc,
+    # 核心部分:
+    use_ss_branch=use_ss_branch,
+    ss_branch=ss_branch,
+    use_refine_head=use_refine_head,
+
     semi_loss=semi_loss,
     train_cfg=dict(
         iter_count=0,

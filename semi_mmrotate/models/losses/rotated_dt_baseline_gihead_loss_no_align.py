@@ -32,7 +32,7 @@ CLASSES = ('large-vehicle', 'swimming-pool', 'helicopter', 'bridge', 'plane',
 
 @ROTATED_LOSSES.register_module()
 class RotatedDTBLGIHeadLoss(nn.Module):
-    def __init__(self, p_selection:dict, distill:dict, cls_channels=16, loss_type='origin', bbox_loss_type='l1'):
+    def __init__(self, p_selection:dict, cls_channels=16, loss_type='origin', bbox_loss_type='l1'):
         super(RotatedDTBLGIHeadLoss, self).__init__()
         self.nc = cls_channels
         assert bbox_loss_type in ['l1', 'iou']
@@ -47,8 +47,6 @@ class RotatedDTBLGIHeadLoss(nn.Module):
         self.loss_type = loss_type
         # 伪标签筛选策略超参, added by yan
         self.p_selection = p_selection
-        # 特征蒸馏超参, added by yan
-        self.distill = distill
         # QFLv2损失
         self.QFLv2 = QFLv2()
 
@@ -79,7 +77,7 @@ class RotatedDTBLGIHeadLoss(nn.Module):
         t_joint_scores = t_centernesses.sigmoid().reshape(-1) * t_scores
         # S_dps是最大的类别置信度特征图的期望
         S_dps = t_scores.mean()
-        # weight_mask只有当mode='global_w'用到 (或自蒸馏损失用得到)
+        # weight_mask
         weight_mask = t_joint_scores
 
         '''根据伪标签筛选策略确定k'''
@@ -140,7 +138,7 @@ class RotatedDTBLGIHeadLoss(nn.Module):
 
             selected_inds, counts = torch.cat([selected_inds_coarse, selected_inds], 0).unique(return_counts=True)
             selected_inds = selected_inds[counts>1]
-
+            # weight_mask其实就是 max_vals 把小于0.02那部分的score置为0
             weight_mask = torch.zeros_like(max_vals)
             weight_mask[selected_inds] = max_vals[selected_inds] 
 
@@ -155,70 +153,75 @@ class RotatedDTBLGIHeadLoss(nn.Module):
         pos_mask = mask > 0.
         neg_mask = mask < 0.
         # weight_mask默认为联合置信度
-        return pos_mask, neg_mask, weight_mask, fg_num, S_dps
+        return pos_mask, neg_mask, weight_mask, fg_num, S_dps, t_joint_scores
 
 
 
-    def forward(self, student, teacher, reshape_t_logits, reshape_s_logits, student_logits, teacher_logits, bs, sup_img_metas=None, unsup_img_metas=None, **kwargs):
-
+    def forward(self, student, teacher, reshape_t_logits, reshape_s_logits, student_logits, teacher_logits, bs, sup_img_metas=None, unsup_img_metas=None, use_refine_head=True, **kwargs):
+        unsup_losses = {}
         # 注意cls_scores和centernesses都是未经过sigmoid()的logits
         t_cls_scores, t_bbox_preds, t_centernesses, _ = reshape_t_logits
         s_cls_scores, s_bbox_preds, s_centernesses, _ = reshape_s_logits
 
-        '''对stundent的预测调整为gi_head接受的格式'''
-        s_cls_labels = torch.argmax(s_cls_scores, dim=1, keepdim=True)
-        s_joint_score = torch.einsum('ij, i -> ij', s_cls_scores.sigmoid(), s_centernesses.sigmoid().squeeze(1)).max(dim=-1)[0].unsqueeze(1)
-        # [bs, total_anchor_num, 7=(cx, cy, w, h, θ, joint_score, label)] 这里的 cx, cy, w, h, θ格式还不对, 还需要解码
-        s_rbb_preds = torch.cat([s_bbox_preds, s_joint_score, s_cls_labels], dim=-1).reshape(bs, -1, 7)
-        # NOTE:Ablation1: 断开refine-head与主体检测器的梯度
-        stu_fpn_feat = [fpn_feat.detach() for fpn_feat in student_logits[4]]
-        # NOTE:Ablation2: 维持refine-head与主体检测器的梯度
-        # stu_fpn_feat = [fpn_feat for fpn_feat in student_logits[4]]
-        # 对原始预测解码
-        # 这里rbb_preds不加.detach() 会报inplace op的错
-        s_rbb_preds = self.rbb_decode(bs, stu_fpn_feat, s_rbb_preds.detach())
+        # refine head 相关:
+        if use_refine_head:
+            '''对stundent的预测调整为gi_head接受的格式'''
+            s_cls_labels = torch.argmax(s_cls_scores, dim=1, keepdim=True)
+            s_joint_score = torch.einsum('ij, i -> ij', s_cls_scores.sigmoid(), s_centernesses.sigmoid().squeeze(1)).max(dim=-1)[0].unsqueeze(1)
+            # [bs, total_anchor_num, 7=(cx, cy, w, h, θ, joint_score, label)] 这里的 cx, cy, w, h, θ格式还不对, 还需要解码
+            s_rbb_preds = torch.cat([s_bbox_preds, s_joint_score, s_cls_labels], dim=-1).reshape(bs, -1, 7)
+            # NOTE:Ablation1: 断开refine-head与主体检测器的梯度
+            # stu_fpn_feat = [fpn_feat.detach() for fpn_feat in student_logits[4]]
+            # NOTE:Ablation2: 维持refine-head与主体检测器的梯度
+            stu_fpn_feat = [fpn_feat for fpn_feat in student_logits[4]]
+            # 对原始预测解码
+            # 这里rbb_preds不加.detach() 会报inplace op的错
+            s_rbb_preds = self.rbb_decode(bs, stu_fpn_feat, s_rbb_preds.detach())
 
-        '''对teacher的预测进行nms转化为pgt'''
-        # NOTE:注意这里传参共享内存, 所以得.clone()
-        t_nms_bboxes, t_nms_labels, t_all_bboxes = self.decode_and_nms(t_bbox_preds.clone(), t_cls_scores.sigmoid(), t_centernesses.sigmoid())
-        # 默认bs=1:
-        nms_t_bboxes_list = [t_nms_bboxes[:, :5]] if t_nms_bboxes.shape[0]!=0 else []
-        nms_t_labels_list = [t_nms_labels] if t_nms_bboxes.shape[0]!=0 else []
-        t_rbb_preds = t_all_bboxes.reshape(bs, -1, 7)
-        '''teacher 一阶段的结果给student roihead学习'''
-        # 注意 roi_head.forward_train接受的回归框坐标的格式是[cx, cy, w, h, a]
-        roi_losses = student.roi_head.loss(
-            stu_fpn_feat, 
-            s_rbb_preds, s_cls_scores.sigmoid().reshape(bs, -1, self.nc), s_centernesses.sigmoid().reshape(bs, -1),
-            # teacher的你结果是作为gt
-            nms_t_bboxes_list, nms_t_labels_list,
-            unsup_img_metas,
-            train_mode='train_unsup'
-            )
-        '''teacher roihead的微调结果给student一阶段学习'''
-        with torch.no_grad():
-            batch_preds = teacher.roi_head.infer(
-                # t_fpn_feat:
-                teacher_logits[4], 
-                t_rbb_preds, t_cls_scores.sigmoid().reshape(bs, -1, self.nc), t_centernesses.sigmoid().reshape(bs, -1),
+            '''对teacher的预测进行nms转化为pgt'''
+            # NOTE:注意这里传参共享内存, 所以得.clone()
+            t_nms_bboxes, t_nms_labels, t_all_bboxes = self.decode_and_nms(t_bbox_preds.clone(), t_cls_scores.sigmoid(), t_centernesses.sigmoid())
+            # 默认bs=1:
+            nms_t_bboxes_list = [t_nms_bboxes[:, :5]] if t_nms_bboxes.shape[0]!=0 else []
+            nms_t_labels_list = [t_nms_labels] if t_nms_bboxes.shape[0]!=0 else []
+            t_rbb_preds = t_all_bboxes.reshape(bs, -1, 7)
+            '''teacher 一阶段的结果给student roihead学习'''
+            # 注意 roi_head.forward_train接受的回归框坐标的格式是[cx, cy, w, h, a]
+            roi_losses = student.roi_head.loss(
+                stu_fpn_feat, 
+                s_rbb_preds, s_cls_scores.sigmoid().reshape(bs, -1, self.nc), s_centernesses.sigmoid().reshape(bs, -1),
+                # teacher的你结果是作为gt
+                nms_t_bboxes_list, nms_t_labels_list,
                 unsup_img_metas,
+                train_mode='train_unsup'
                 )
-            batch_t_res_bboxes, batch_t_res_labels = [], []
-            for preds in batch_preds:
-                # [nms_boxes_num, 7=(cx, cy, w, h, θ, score, label)] -> [nms_boxes_num, 5=(cx, cy, w, h, θ)], [nms_boxes_num]
-                batch_t_res_bboxes.append(preds[:, :5])
-                batch_t_res_labels.append(preds[:, 6])
+            '''teacher roihead的微调结果给student一阶段学习'''
+            with torch.no_grad():
+                batch_preds = teacher.roi_head.infer(
+                    # t_fpn_feat:
+                    teacher_logits[4], 
+                    t_rbb_preds, t_cls_scores.sigmoid().reshape(bs, -1, self.nc), t_centernesses.sigmoid().reshape(bs, -1),
+                    unsup_img_metas,
+                    )
+                batch_t_res_bboxes, batch_t_res_labels = [], []
+                for preds in batch_preds:
+                    # [nms_boxes_num, 7=(cx, cy, w, h, θ, score, label)] -> [nms_boxes_num, 5=(cx, cy, w, h, θ)], [nms_boxes_num]
+                    batch_t_res_bboxes.append(preds[:, :5])
+                    batch_t_res_labels.append(preds[:, 6])
 
-
-        # 可视化(一般情况下注释)
-        # vis_unsup_bboxes_batch(img_metas, bs, nms_bboxes_list, proposal_list, batch_res_bboxes, './vis_unsup_bboxes')
-        # 2.送到head进行正负样本分配(nms后的结果作为gt) + 计算损失
-        # cls_scores, bbox_preds, angle_preds, centernesses, _ = student_logits
-        sup_losses, _, _, _, _, _, = student.bbox_head.loss(student_logits[0], student_logits[1], student_logits[2], student_logits[3], batch_t_res_bboxes, batch_t_res_labels,  None, None)
-        # 获取对应损失
-        denoise_cls_loss, denoise_cnt_loss, denoise_box_loss = sup_losses['loss_cls'], sup_losses['loss_centerness'], sup_losses['loss_bbox']
-        
-
+            # 可视化(一般情况下注释)
+            # vis_unsup_bboxes_batch(img_metas, bs, nms_bboxes_list, proposal_list, batch_res_bboxes, './vis_unsup_bboxes')
+            # 2.送到head进行正负样本分配(nms后的结果作为gt) + 计算损失
+            # cls_scores, bbox_preds, angle_preds, centernesses, _ = student_logits
+            sup_losses, _, _, _, _, _, = student.bbox_head.loss(student_logits[0], student_logits[1], student_logits[2], student_logits[3], batch_t_res_bboxes, batch_t_res_labels,  None, None)
+            # 获取对应损失
+            denoise_cls_loss, denoise_cnt_loss, denoise_box_loss = sup_losses['loss_cls'], sup_losses['loss_centerness'], sup_losses['loss_bbox']
+            # refinehead结果微调student一阶段结果的损失 (无监督多对一sparse损失(roi-head))
+            unsup_losses['loss_denoise_box'] = denoise_box_loss
+            # refinehead自己的损失 (无监督 refine head 损失)
+            unsup_losses['loss_bbox_refine'] = roi_losses['gi_reg_loss']
+            unsup_losses['loss_cls_refine'] = roi_losses['gi_cls_loss']
+            unsup_losses['iou_improve'] = roi_losses['iou_improve']
 
 
 
@@ -229,7 +232,7 @@ class RotatedDTBLGIHeadLoss(nn.Module):
         k = self.p_selection.get('k', 0.01)
         beta = self.p_selection.get('beta', 1.0)
         with torch.no_grad():
-            pos_mask, neg_mask, weight_mask, fg_num, S_dps = self.pseudoLabelSelection(mode, teacher_logits, t_cls_scores, t_bbox_preds, t_centernesses, k, beta)
+            pos_mask, neg_mask, weight_mask, fg_num, S_dps, t_joint_scores = self.pseudoLabelSelection(mode, teacher_logits, t_cls_scores, t_bbox_preds, t_centernesses, k, beta)
 
         '''损失'''
         # 无监督分类损失QFLv2 (without ignore region)
@@ -275,30 +278,14 @@ class RotatedDTBLGIHeadLoss(nn.Module):
                 unsup_loss_bbox = (weight_mask[:, None][pos_mask] * loss_bbox).mean() * 10
                 unsup_loss_centerness = (weight_mask[:, None][pos_mask] * loss_centerness).mean() * 10
 
+        # 无监督dense损失(denseteacher)
+        unsup_losses['loss_cls'] = unsup_loss_cls
+        unsup_losses['loss_bbox'] = unsup_loss_bbox
+        unsup_losses['loss_centerness'] = unsup_loss_centerness
+        unsup_losses['S_dps'] = S_dps
 
-        # 总损失采用字典形式组织
-        unsup_losses = dict(
-            # 无监督dense损失(denseteacher)
-            loss_cls=unsup_loss_cls,
-            loss_bbox=unsup_loss_bbox,
-            loss_centerness=unsup_loss_centerness,
-
-            # sdps
-            # NOTE:yan add S_dps to tensorboard
-            S_dps=S_dps,
-
-            # 无监督 refine head 损失
-            loss_bbox_refine = roi_losses['gi_reg_loss'], 
-            loss_cls_refine = roi_losses['gi_cls_loss'], 
-            iou_improve = roi_losses['iou_improve'],
-
-            # 无监督多对一sparse损失(roi-head)
-            loss_denoise_box=denoise_box_loss,
-            # loss_denoise_cls=denoise_cls_loss,
-            # loss_denoise_cnt=denoise_cnt_loss,
-        )
         # print(unsup_losses)
-        return unsup_losses, weight_mask
+        return unsup_losses, t_joint_scores
 
 
 

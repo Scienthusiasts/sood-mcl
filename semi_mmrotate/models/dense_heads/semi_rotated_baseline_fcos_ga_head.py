@@ -109,7 +109,7 @@ class SemiRotatedBLFCOSGAHead(SemiRotatedBLFCOSHead):
             pos_decoded_target_preds = bbox_coder.decode(
                 pos_points, pos_bbox_targets)
             
-            # smooth the centerness based on relative scale
+            # smooth the centerness based on relative scale (mcl:aaai25)
             img_scale = img_shape[0] * img_shape[1]
             scale_factor = ((flatten_bbox_targets[:, 2] * flatten_bbox_targets[:, 3]) / img_scale).pow(0.2)
             flatten_centerness_targets = flatten_centerness_targets ** scale_factor

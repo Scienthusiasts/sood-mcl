@@ -84,10 +84,10 @@ cd /data/yht/code/sood-mcl
 #     --work-dir log/dtbaseline/debug/dtbaseline
 
 # 10per_dtbaseline_gihead_ss_train DOTA1.5 debug # CUDA_LAUNCH_BLOCKING=1 
-# /home/yht/.conda/envs/sood-mcl/bin/python -m torch.distributed.launch --node_rank=0 --master_addr="127.0.0.1" --nproc_per_node=2 --nnodes=1 --master_port=29550\
-#     train.py configs_dota15/denseteacher_baseline/denseteacher_fcos_refineGIhead_ss_dota15_10p_debug.py \
-#     --launcher pytorch \
-#     --work-dir log/dtbaseline_gi/debug
+/home/yht/.conda/envs/sood-mcl/bin/python -m torch.distributed.launch --node_rank=0 --master_addr="127.0.0.1" --nproc_per_node=2 --nnodes=1 --master_port=29550\
+    train.py configs_dota15/denseteacher_baseline/denseteacher_fcos_refineGIhead_ss_dota15_10p_debug.py \
+    --launcher pytorch \
+    --work-dir log/dtbaseline_gi/debug
 
 # 10per_denseteacher_train DOTA1.5 debug # CUDA_LAUNCH_BLOCKING=1 
 # /home/yht/.conda/envs/sood-mcl/bin/python -m torch.distributed.launch --node_rank=0 --master_addr="127.0.0.1" --nproc_per_node=2 --nnodes=1 --master_port=29550\
@@ -161,11 +161,11 @@ cd /data/yht/code/sood-mcl
 #     --work-dir log/dtbaseline/DOTA1.5/ss-branch/global-w_refinehead/joint-score-sigmoid_burn-in-12800_orcnn-head_all-refine-loss_box-O2M-loss_detach_GA_ssloss-joint-jsd-dim0-w1.0_10_modify-batch-nms
 
 # 10per_dtbaseline_gihead_train DOTA1.5
-# sh run.sh > log/dtbaseline/DOTA1.5/ss-branch/global-w_gihead/joint-score-sigmoid_burn-in-12800_gi-head_all-refine-loss_box-O2M-loss_GA_detach-fpnfeat_ssloss-joint-jsd-dim0-w1.0_avgpoolroi2/terminal_log.log 2>&1
-/home/yht/.conda/envs/sood-mcl/bin/python -m torch.distributed.launch --node_rank=0 --master_addr="127.0.0.1" --nproc_per_node=2 --nnodes=1 --master_port=29560\
-    train.py configs_dota15/denseteacher_baseline/denseteacher_fcos_refineGIhead_ss_dota15_10p.py \
-    --launcher pytorch \
-    --work-dir log/dtbaseline/DOTA1.5/ss-branch/global-w_gihead/joint-score-sigmoid_burn-in-12800_gi-head_all-refine-loss_box-O2M-loss_GA_detach-fpnfeat_ssloss-joint-jsd-dim0-w1.0_avgpoolroi2
+# # sh run.sh > log/dtbaseline/DOTA1.5/ss-branch/global-w_gihead/joint-score-sigmoid_burn-in-12800_gi-head_all-refine-loss_box-O2M-loss_GA_detach-fpnfeat_ssloss-joint-jsd-dim0-w1.0_avgpoolroi3/terminal_log.log 2>&1
+# /home/yht/.conda/envs/sood-mcl/bin/python -m torch.distributed.launch --node_rank=0 --master_addr="127.0.0.1" --nproc_per_node=2 --nnodes=1 --master_port=29560\
+#     train.py configs_dota15/denseteacher_baseline/denseteacher_fcos_refineGIhead_ss_dota15_10p.py \
+#     --launcher pytorch \
+#     --work-dir log/dtbaseline/DOTA1.5/ss-branch/global-w_gihead/joint-score-sigmoid_burn-in-12800_gi-head_all-refine-loss_box-O2M-loss_GA_detach-fpnfeat_ssloss-joint-jsd-dim0-w1.0_avgpoolroi3
 
 
 # 10per_dtbaseline_train DOTA1.5 

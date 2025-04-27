@@ -157,7 +157,7 @@ class GIRoIHead(BaseModule):
 
 
     def add_GT2NMS_boxes_single(self, nms_bboxes, nms_labels, nms_scores, gt_bboxes, gt_labels, img_meta, pgt_scores=None):
-        """如果存在有GTBox和任何NMSBox都匹配不上, 则把这个GTBox加入到NMSBox中(仅在有监督训练时调用)
+        """如果存在有GTBox和任何NMSBox都匹配不上, 则把这个GTBox加入到NMSBox中(仅在训练时调用)
             Args:
                 nms_bboxes: [post_nms_num, 6=(cx, cy, w, h, θ, score)]
                 nms_labels: [post_nms_num]
@@ -183,6 +183,7 @@ class GIRoIHead(BaseModule):
             zero_gt_idx = gt_idx[zero_gt_idx_mask]
             gt_zero_iou_mask[zero_gt_idx] = True
 
+        # 如果存在有GTBox和任何NMSBox都匹配不上, 则把这个GTBox加入到NMSBox中
         gt_zero_iou_num = gt_zero_iou_mask.sum()
         if(gt_zero_iou_num > 0):
             score = torch.ones(gt_zero_iou_num, 1).to(gt_bboxes.device)
@@ -345,7 +346,7 @@ class GIRoIHead(BaseModule):
         batch_nms_bboxes, batch_nms_scores, cls_score, reg_delta = self.forward(fpn_feat, dense_rbb_preds, dense_cls_score, dense_centerness, img_meta, gt_bboxes, gt_labels)
         # TODO:直接用一阶段的分配结果(sup分支)
         # 匈牙利匹配分配正负样本目前发现以下几个情况:
-        # 差距过大(IoU=0)的框被匹配在一起(已解决, 把GT加入nms_box), 和GT差距很小的框由于类别不正确因此未匹配上(已解决, 用maxIoU重匹配)
+        # 差距过大(IoU=0)的框被匹配在一起(已解决, 把GT加入nms_box, 在add_GT2NMS_boxes_single实现), 和GT差距很小的框由于类别不正确因此未匹配上(已解决, 用maxIoU重匹配, 在assigner实现)
         batch_idx, match_pred_gt_bboxes, match_gt_logits = self.assigner.assign(gt_bboxes, batch_nms_bboxes, gt_labels, batch_nms_scores, img_meta)
 
         '''回归损失'''
@@ -402,7 +403,7 @@ class GIRoIHead(BaseModule):
         '''decode'''
         nms_bboxes = torch.cat(batch_nms_bboxes)
         gi_bboxes = self.bbox_coder.decode(nms_bboxes, reg_delta)
-        # TODO:这里感觉预测的cls_score很有问题(负样本的噪声很大)，因此还是用nms的score
+        # TODO:这里感觉预测的cls_score很有问题(负样本的噪声很大)，因此还是用nms的score?
         cls_score = cls_score.sigmoid()
         # cls_score = nms_scores
         

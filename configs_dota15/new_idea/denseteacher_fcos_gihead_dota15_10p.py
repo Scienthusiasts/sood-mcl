@@ -23,31 +23,22 @@ nc = 16
 # 伪标签筛选超参
 semi_loss = dict(type='RotatedDTBLGIHeadLoss', cls_channels=nc, loss_type='origin', bbox_loss_type='l1', 
                  # 'topk', 'top_dps', 'catwise_top_dps', 'global_w', 'sla'
-                 p_selection = dict(mode='global_w', k=0.01, beta=2.0), # 当mode=='top_dps'时, beta为S_pds的权重系数
+                 p_selection = dict(mode='topk', k=0.03, beta=2.0), # 当mode=='top_dps'时, beta为S_pds的权重系数
                  # p_selection = dict(mode='sla', k=0.01, beta=1.0),
                  )
 
 # 无监督分支权重
 unsup_loss_weight = 1.0
 # 是否使用高斯椭圆标签分配 (注意GA分配得搭配QualityFocalLoss)
-bbox_head_type = 'SemiRotatedBLFCOSGAHead'
-loss_cls=dict(type='QualityFocalLoss', use_sigmoid=True, beta=2.0, loss_weight=1.0, activated=True)
-# bbox_head_type = 'SemiRotatedBLFCOSHead'
-# loss_cls=dict(type='FocalLoss', use_sigmoid=True, gamma=2.0, alpha=0.25, loss_weight=1.0)
+bbox_head_type = 'SemiRotatedBLFCOSHead'
+loss_cls=dict(type='FocalLoss', use_sigmoid=True, gamma=2.0, alpha=0.25, loss_weight=1.0)
 
 # 是否开启选择一致性自监督分支
-use_ss_branch=True
-ss_branch = dict(
-    nc=nc,
-    rand_angle_range=[45, 135], 
-    flip_p=0.0, 
-    score_interpolate_mode='nearest',
-    box_interpolate_mode='nearest',
-)
+use_ss_branch=False
+ss_branch = None
 
 # 是否开启refine head
 use_refine_head=True
-# refine head具体参数:如果 use_refine_head=False, 则roi_head=None
 roi_head=dict(
     type='GIRoIHead', # ORCNNRoIHead GIRoIHead
     bbox_roi_extractor=dict(
@@ -72,20 +63,12 @@ roi_head=dict(
     roi_pooling = 'avg_pool', 
     assigner='HungarianWithIoUMatching',
 )
-# use_refine_head=False
-# roi_head=None
 
 
-
-
-
-
-
-# just for debug:
-burn_in_steps = 12800
+burn_in_steps = 6400
 # 是否导入权重
-# load_from = '/data/yht/code/sood-mcl/log/dtbaseline/DOTA1.5/ss-branch/global-w_gihead/joint-score-sigmoid_burn-in-12800_gi-head_all-refine-loss_box-O2M-loss_detach_GA_ssloss-joint-jsd-dim0-w1.0/latest.pth'
-load_from = None
+load_from = 'log/new/denseteacher/gihead/burn-in-6400_top0.03_O2M-only-boxloss_refine-allloss_avgpoolroi/iter_12800.pth'
+# load_from = None
 
 
 

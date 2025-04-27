@@ -447,21 +447,27 @@ def vis_HM_boxes(batch_match_pred_gt_bboxes, batch_match_gt_logits, img_metas, s
         match_mask = poly_gt_boxes.sum(1)!=0
 
         # opencv绘制框
-        for poly_pred_box, poly_gt_box in zip(poly_pred_boxes[match_mask].detach().cpu().numpy(), poly_gt_boxes[match_mask].detach().cpu().numpy()):
-            # 随机颜色
-            color = np.random.randint(0, 256, size=3)
-            gt_color = tuple([int(x) for x in color])
-            pred_color = tuple([int(min(x+35, 255)) for x in color])
-            # 绘制匹配上的那些框
-            img = OpenCVDrawBox(img, [poly_pred_box], pred_color, 2)
-            img = OpenCVDrawBox(img, [poly_gt_box], gt_color, 1)
-        # 绘制未匹配上的那些框
-        img = OpenCVDrawBox(img, poly_pred_boxes[~match_mask].detach().cpu().numpy(), (0,0,255), 1)
-
-        # img = OpenCVDrawBox(img, poly_gt_boxes[match_mask].detach().cpu().numpy(), (0,255,0), 2)
-        # img = OpenCVDrawBox(img, poly_pred_boxes[match_mask].detach().cpu().numpy(), (0,0,255), 2)
+        # for i, (poly_pred_box, poly_gt_box) in enumerate(zip(poly_pred_boxes[match_mask].detach().cpu().numpy(), poly_gt_boxes[match_mask].detach().cpu().numpy())):
+        #     # 随机颜色
+        #     color = np.random.randint(0, 256, size=3)
+        #     gt_color = tuple([int(x) for x in color])
+        #     pred_color = tuple([int(min(x+35, 255)) for x in color])
+        #     # 绘制匹配上的那些框
+        #     img = OpenCVDrawBox(img, [poly_pred_box], pred_color, 2)
+        #     img = OpenCVDrawBox(img, [poly_gt_box], gt_color, 1)
+        #     # 绘制匹配线段
+        #     cx0, cy0 = match_pred_gt_bboxes[0][match_mask][i, :2].detach().cpu().numpy().astype(np.int32)
+        #     cx1, cy1 = match_pred_gt_bboxes[1][match_mask][i, :2].detach().cpu().numpy().astype(np.int32)
+        #     # print(cx0, cy0, cx1, cy1)
+        #     # print('='*100)
+        #     cv2.line(img, (cx0, cy0), (cx1, cy1), pred_color, thickness=2)
         # # 绘制未匹配上的那些框
-        # img = OpenCVDrawBox(img, poly_pred_boxes[~match_mask].detach().cpu().numpy(), (255,255,255), 2)
+        # img = OpenCVDrawBox(img, poly_pred_boxes[~match_mask].detach().cpu().numpy(), (0,0,255), 1)
+
+        img = OpenCVDrawBox(img, poly_gt_boxes[match_mask].detach().cpu().numpy(), (0,255,0), 2)
+        img = OpenCVDrawBox(img, poly_pred_boxes[match_mask].detach().cpu().numpy(), (0,0,255), 2)
+        # 绘制未匹配上的那些框
+        img = OpenCVDrawBox(img, poly_pred_boxes[~match_mask].detach().cpu().numpy(), (255,255,255), 2)
 
 
         if not os.path.exists(save_dir):os.makedirs(save_dir)

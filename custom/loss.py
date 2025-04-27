@@ -230,12 +230,15 @@ class HungarianWithIoUMatching():
             # vis_HM_cost_matrix(l1_cost, './vis_HM_box_cost', img_meta['ori_filename'])
             # vis_HM_cost_matrix(total_cost, './vis_HM_total_cost', img_meta['ori_filename'], range_limit=False)
 
-        '''匈牙利匹配+maxIoU重匹配'''
+        '''匈牙利匹配'''
         # 匈牙利匹配:
         gt_idx, pred_idx = linear_sum_assignment(total_cost.cpu().numpy())
+
+        '''负样本maxIoU重匹配'''
         if maxiou_reassign:
             # 对那些负样本重新分配GT, 这次只考虑IoU:
             pred_idx, gt_idx = self.max_iou_assign_single(gt_boxes, pred_boxes, pred_idx, gt_idx)
+
         # 根据配对索引生成配对的结果 [2, m, 5=(cx, cy, w, h, θ)] (未匹配上的结果则用全0代替)
         match_pred_gt_bboxes = torch.zeros((2, m, 5), device=gt_boxes.device)
         match_pred_gt_bboxes[0, ...] = pred_boxes[:, :5]

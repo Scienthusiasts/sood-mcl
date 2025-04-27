@@ -273,72 +273,21 @@ def batch_grouping_by_nmsboxes(dense_bboxes, nms_bboxes, nms_scores, iou_thres=0
 
 
 
-def batch_tensor_random_flip(tensor, p=0.5):
-    '''对图像进行随机翻转(或以概率p不翻转)'''
-    if p==0.0: 
-        return tensor, False
-    # 生成一个随机数
-    rand_num = random.uniform(0,1)
-    if rand_num >= p:
-        return tensor, False
-    else:
-        # 在第2维（h维度）上翻转, 相当于垂直翻转 (上下翻转)
-        # 如果是水平翻转就第三维度
-        vflip_tensor = torch.flip(tensor, dims=[2])
-        return vflip_tensor, True
 
 
 
-def batch_tensor_random_rotate(tensor, angle_range, rand=True):
-    '''对张量图像进行随机角度旋转(使用镜像填充), 并返回旋转mask
-        Args:
-            tensor: 张量图像, 形状为[bs, 3, h, w]
-            angle_range: 随机旋转的角度(角度)范围[min, max]
-
-        Returns:
-            rotaug_img: 旋转后的图像
-            rand_angle: 旋转的角度
+def rearrange_order(bs, flatten_tensor):
+    '''调整flatten_tensor的拼接顺序 (/data/yht/code/sood-mcl/semi_mmrotate/models/rotated_dt_baseline_ss_gi_head.py会用到)
+        flatten_tensor: ============= ============= ---------- ---------- ~~~~~ ~~~~~ ·· ··
+        rearrange:      ============= ---------- ~~~~~ ·· ============= ---------- ~~~~~ ··
     '''
-    # 生成一个随机角度
-    if rand:
-        rand_angle = random.uniform(angle_range[0], angle_range[1])
-    else:
-        return tensor, 0.
-    # 先进行镜像填充
-    padded_tensor, padded_len = pad_tensor(tensor, (2**0.5 - 1) / 2)
-    # 再进行旋转操作
-    rotaug_img = rotate(padded_tensor, rand_angle, expand=False)
-    h, w = rotaug_img.shape[2:]
-    # rotaug_img去掉padding的部分, 还原为原始大小(这样就能去除掉padding的黑色填充, 只保留镜像填充)
-    rotaug_img = rotaug_img[..., padded_len[0]:h-padded_len[2], padded_len[1]:w-padded_len[3]]
-    # ori_mask = F.interpolate(ori_mask.unsqueeze(1), scale_factor=1/16, mode='nearest').squeeze(1)
-    return rotaug_img, rand_angle
-
-
-
-
-
-def pad_tensor(tensor, k, fill='reflect'):
-    '''对张量图像进行padding, 
-        Args:
-            tensor: 张量图像, 形状为[bs, 3, h, w]
-            k:      padding的大小为边长的k倍
-            fill:   padding部分的填充方式, 默认镜像填充
-
-        Returns:
-            padded_tensor: padding后的张量, 形状为[bs, 3, h, w]
-            padded_len:    四条边padding的长度
-    '''
-    h, w = tensor.shape[2:]
-    # 计算每个边界的 padding 大小 (k 倍边长)
-    padding_top = padding_bottom = round(h * k)
-    padding_left = padding_right = round(w * k)
-    # 对张量进行 padding, 使用镜像填充
-    padded_tensor = pad(tensor, (padding_left, padding_right, padding_top, padding_bottom), padding_mode=fill)
-    pad_len = [padding_top, padding_left, padding_bottom, padding_right]
-    return padded_tensor, pad_len
-
-
-
-
-
+    scale_num = 5
+    lvl_range = [0, 16384, 20480, 21504, 21760, 21824]
+    sizes = [16384, 4096, 1024, 256, 64]
+    total_anchor_num = 21824
+    rearrange_flatten_tensor = torch.zeros_like(flatten_tensor)
+    for b in range(bs):
+        for lvl in range(scale_num):
+            rearrange_flatten_tensor[b * total_anchor_num + lvl_range[lvl]: b * total_anchor_num + lvl_range[lvl+1]] = \
+            flatten_tensor[lvl_range[lvl]*2+b*sizes[lvl]:lvl_range[lvl]*2+(b+1)*sizes[lvl]]
+    return rearrange_flatten_tensor
