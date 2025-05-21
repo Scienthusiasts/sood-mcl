@@ -216,11 +216,12 @@ class SSBranch(nn.Module):
             ss_loss_joint_score = self.cls_ssloss(o_centernesses, r_centernesses, o_cls_scores, r_cls_scores, rot_mask) * self.score_loss_w
             '''自监督回归框(角度+尺度)一致损失'''
             ss_loss_box = self.box_ssloss(rand_angle, o_decode_bboxes, r_decode_bboxes, o_weight_mask, rot_mask) * self.box_loss_w
-
-            return ss_loss_joint_score, ss_loss_box
         else:
             # 否则全返回0损失值
-            return 0.0, 0.0
+            ss_loss_joint_score = torch.tensor(0.0, device=rot_mask.device)
+            ss_loss_box = torch.tensor(0.0, device=rot_mask.device)
+    
+        return ss_loss_joint_score, ss_loss_box
 
 
     def cls_ssloss(self, o_centernesses, r_centernesses, o_cls_scores, r_cls_scores, rot_mask):
@@ -260,7 +261,20 @@ class SSBranch(nn.Module):
         '''自监督回归框(角度+尺度)一致损失'''
         # box在计算损失的时候就只取那些旋转前后一致的样本(rot_mask)
         riou_loss = build_loss(dict(type='RotatedIoULoss', reduction='none'))
-        # 有时候h和w会存在=0的情况
+        # 有时候h和w会存在=0的情况, 用clamp避免
+        # 对 o_decode_bboxes 的非原地操作
+        o_decode_bboxes = torch.cat([
+            o_decode_bboxes[:, :2],
+            torch.clamp(o_decode_bboxes[:, 2:4], min=2.),
+            o_decode_bboxes[:, 4:]  
+        ], dim=1)
+        # 对 r_decode_bboxes 的非原地操作
+        r_decode_bboxes = torch.cat([
+            r_decode_bboxes[:, :2],
+            torch.clamp(r_decode_bboxes[:, 2:4], min=2.),
+            r_decode_bboxes[:, 4:] 
+        ], dim=1)
+
         o_h_nonzero, o_w_nonzero = o_decode_bboxes[:, 2]!=0., o_decode_bboxes[:, 3]!=0.
         o_nonzero_mask = o_h_nonzero * o_w_nonzero
         r_h_nonzero, r_w_nonzero = r_decode_bboxes[:, 2]!=0., r_decode_bboxes[:, 3]!=0.
@@ -271,6 +285,7 @@ class SSBranch(nn.Module):
         if final_mask.sum() - rot_mask.sum() < 0:
             o_decode_bboxes[:, 2:4] += 1
             r_decode_bboxes[:, 2:4] += 1
+
         ss_loss_box_all = riou_loss(o_decode_bboxes[rot_mask], r_decode_bboxes[rot_mask])
         ss_loss_box = (o_weight_mask[rot_mask] * ss_loss_box_all)
         # 去除掉那些负数的损失

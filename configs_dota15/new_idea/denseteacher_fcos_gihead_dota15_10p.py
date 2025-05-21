@@ -59,6 +59,7 @@ roi_head=dict(
         target_means=(.0, .0, .0, .0, .0),
         target_stds=(0.1, 0.1, 0.2, 0.2, 0.1)),
     nc=nc,
+    add_noise_p=0.5,
     # 'share_head' 'avg_pool' 'share_fchead'
     roi_pooling = 'avg_pool', 
     assigner='HungarianWithIoUMatching',
@@ -67,7 +68,7 @@ roi_head=dict(
 
 burn_in_steps = 6400
 # 是否导入权重
-load_from = 'log/new/denseteacher/gihead/burn-in-6400_top0.03_O2M-only-boxloss_refine-allloss_avgpoolroi/iter_12800.pth'
+load_from = 'log/new/denseteacher/gihead/burn-in-6400_top0.03_O2M-only-boxloss_refine-allloss_avgpoolroi/latest.pth'
 # load_from = None
 
 
@@ -335,11 +336,11 @@ custom_hooks = [
 ]
 
 # evaluation
-# evaluation = dict(type="SubModulesDistEvalHook", interval=3200, metric='mAP',
-#                   save_best='mAP')
-# 单卡调试时推理报分布式的错，是BN的问题，在配置文件里加一个broadcast_这个参数
 evaluation = dict(type="SubModulesDistEvalHook", interval=3200, metric='mAP',
-                  save_best='mAP', broadcast_bn_buffer=False)
+                  save_best='mAP')
+# 单卡调试时推理报分布式的错，是BN的问题，在配置文件里加一个broadcast_这个参数
+# evaluation = dict(type="SubModulesDistEvalHook", interval=3200, metric='mAP',
+#                   save_best='mAP', broadcast_bn_buffer=False)
 
 
 # optimizer

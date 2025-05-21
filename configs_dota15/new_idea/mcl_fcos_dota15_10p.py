@@ -311,11 +311,11 @@ custom_hooks = [
 ]
 
 # evaluation
-# evaluation = dict(type="SubModulesDistEvalHook", interval=3200, metric='mAP',
-#                   save_best='mAP')
-# 单卡调试时推理报分布式的错，是BN的问题，在配置文件里加一个broadcast_这个参数
 evaluation = dict(type="SubModulesDistEvalHook", interval=3200, metric='mAP',
-                  save_best='mAP', broadcast_bn_buffer=False)
+                  save_best='mAP')
+# 单卡调试时推理报分布式的错，是BN的问题，在配置文件里加一个broadcast_这个参数
+# evaluation = dict(type="SubModulesDistEvalHook", interval=3200, metric='mAP',
+#                   save_best='mAP', broadcast_bn_buffer=False)
 
 
 # optimizer

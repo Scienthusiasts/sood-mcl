@@ -8,7 +8,7 @@ from mmrotate.core import build_bbox_coder, multiclass_nms_rotated
 from mmcv.ops import box_iou_quadri, box_iou_rotated
 from torchvision.transforms.functional import rotate, pad
 import random
-
+import matplotlib.pyplot as plt
 
 
 
@@ -157,11 +157,16 @@ def batch_nms(bboxes, cls_scores, centerness, score_thr=0.2):
     # 对batch每张图片分别nms
     for i in range(bboxes.shape[0]):
         # 异常处理, 舍弃那些面积等于0的框
-        area = bboxes[i, :, 2] * bboxes[i, :, 3]
-        correct_mask = area>0
-        correct_bboxes = bboxes[i][correct_mask]
-        correct_cls_scores = cls_scores[i][correct_mask]
-        correct_centerness = centerness[i][correct_mask]
+        # area = bboxes[i, :, 2] * bboxes[i, :, 3]
+        # correct_mask = area>0
+        # correct_bboxes = bboxes[i][correct_mask]
+        # correct_cls_scores = cls_scores[i][correct_mask]
+        # correct_centerness = centerness[i][correct_mask]
+        # 异常处理方式2:
+        bboxes[i][:, 2:4] = torch.clamp(bboxes[i][:, 2:4], min=2.)
+        correct_bboxes = bboxes[i]
+        correct_cls_scores = cls_scores[i]
+        correct_centerness = centerness[i]
 
         # multiclass_nms_rotated的输入需要包含背景类预测
         padding = correct_cls_scores.new_zeros(correct_cls_scores.shape[0], 1)
@@ -291,3 +296,55 @@ def rearrange_order(bs, flatten_tensor):
             rearrange_flatten_tensor[b * total_anchor_num + lvl_range[lvl]: b * total_anchor_num + lvl_range[lvl+1]] = \
             flatten_tensor[lvl_range[lvl]*2+b*sizes[lvl]:lvl_range[lvl]*2+(b+1)*sizes[lvl]]
     return rearrange_flatten_tensor
+
+
+
+
+
+
+
+
+
+def gen_bboxes_sine_embedings_cxcywha(bboxes, embed_dims, temperature=20):
+    """将旋转框坐标(4点)生成位置编码
+        Args:
+            bboxes:     形状为 [bs, N, 8] 的张量, 8代表 (x0,y0,x1,y1,x2,y2,x3,y3), 且是归一化坐标
+            embed_dims: 位置编码的维度(最终是8*embed_dims, 因为是8个坐标的编码拼在一起)
+        Returns:
+            pe: 位置编码
+    """
+    # 位置编码的公式: sin(2π·cx / temperature^(2i/embed_dims)) 其他分量(cy, w, h, angle)
+    scale = 2 * torch.pi
+    dim_t = torch.arange(embed_dims, dtype=torch.float32, device=bboxes.device)
+    dim_t = temperature ** (2 * (dim_t // 2) / embed_dims)
+    
+    embed = bboxes * scale
+    # pos.shape = [bs, group_num, 8, embed_dims]
+    pos = embed.unsqueeze(-1) / dim_t
+
+    # 和原始的正余弦编码在位置交错编码不一样，这里先正弦编码再余弦编码
+    sin_pos = pos[:, :, :, 0::2].sin()  
+    cos_pos = pos[:, :, :, 1::2].cos()  
+    # [bs, group_num, 8, embed_dims]
+    pe = torch.stack((sin_pos, cos_pos), dim=4).flatten(3, 4).flatten(2, 3)
+    
+    return pe
+
+
+
+def normalize_polybboxes(bboxes, img_w, img_h):
+    """将旋转矩形框的坐标从像素值归一化到[0,1]范围
+        Args:
+            bboxes: 形状为 [bs, N, 8] 的张量, 8代表 (x0,y0,x1,y1,x2,y2,x3,y3)
+            img_w: 原始图像宽度 (像素)
+            img_h: 原始图像高度 (像素)
+        Returns:
+            归一化后的bboxes, 形状仍为 [bs, N, 8]
+    """
+    # 创建归一化尺度因子 [1, 1, 8]
+    scale_factor = bboxes.new_tensor([img_w, img_h, img_w, img_h, img_w, img_h, img_w, img_h]).view(1, 1, 8)
+    # 复制bboxes避免原地修改
+    normalized_bboxes = bboxes.clone()
+    # 归一化 x0,y0,x1,y1,x2,y2,x3,y3
+    normalized_bboxes = normalized_bboxes / scale_factor
+    return normalized_bboxes

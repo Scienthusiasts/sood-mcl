@@ -562,3 +562,50 @@ def vis_gi_head_bboxes_single(image, img_name, nms_bboxes, gi_boxes, root_dir):
     if not os.path.exists(root_dir):os.makedirs(root_dir)
     img_save_path = f"{root_dir}/{img_name}"
     cv2.imwrite(img_save_path, img)
+
+
+
+
+
+
+
+
+
+def vis_gi_head_noise_batch(img_metas, bs, batch_dense_rois, batch_noise_dense_rois, root_dir):
+    '''可视化微调模块加噪前后的结果
+        Args:
+            img_metas:        图像和图像信息
+            bs:               batch size
+            dense_rois:       nms后保留的结果
+            noise_dense_rois: gi_head微调结果  
+            root_dir:         可视化结果保存路径
+        Returns:
+            None
+    '''
+    # 图像和图像名
+    img_names = [img_meta['ori_filename'] for img_meta in img_metas['img_metas']]
+    images = img_metas['img']
+    # 每张图片分别可视化
+    for batch in range(bs):
+        batch_mask = batch_dense_rois[:, 0]==batch
+        dense_rois = batch_dense_rois[batch_mask][:,1:]
+        noise_dense_rois = batch_noise_dense_rois[batch_mask][:,1:]
+        img_name = img_names[batch]
+        # 原图预处理
+        std = np.array([58.395, 57.12 , 57.375]) / 255.
+        mean = np.array([123.675, 116.28 , 103.53]) / 255.
+        img = images[batch].permute(1,2,0).cpu().numpy()
+        img = np.clip(img * std + mean, 0, 1)
+        img = (img * 255.).astype(np.uint8)
+        img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+        # 5参转8参
+        poly_dense_rois = obb2poly(dense_rois)
+        poly_noise_dense_rois = obb2poly(noise_dense_rois)
+        # 可视化加噪的框
+        img = OpenCVDrawBox(img, poly_noise_dense_rois.detach().cpu().numpy(), (0,0,255), 1)
+        # 可视化加噪之前的框
+        img = OpenCVDrawBox(img, poly_dense_rois.detach().cpu().numpy(), (0,255,0), 1)
+        # 保存结果
+        if not os.path.exists(root_dir):os.makedirs(root_dir)
+        img_save_path = f"{root_dir}/{img_name}"
+        cv2.imwrite(img_save_path, img)

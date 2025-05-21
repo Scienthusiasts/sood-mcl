@@ -23,7 +23,7 @@ nc = 16
 # 伪标签筛选超参
 semi_loss = dict(type='RotatedDTBLGIHeadLoss', cls_channels=nc, loss_type='origin', bbox_loss_type='l1', 
                  # 'topk', 'top_dps', 'catwise_top_dps', 'global_w', 'sla'
-                 p_selection = dict(mode='sla', k=0.01, beta=1.0), # 当mode=='top_dps'时, beta为S_pds的权重系数
+                 p_selection = dict(mode='global_w', k=0.01, beta=-1.), # 当mode=='top_dps'时, beta为S_pds的权重系数
                  )
 
 # 无监督分支权重
@@ -31,10 +31,23 @@ unsup_loss_weight = 1.0
 # 是否使用高斯椭圆标签分配 (注意GA分配得搭配QualityFocalLoss)
 bbox_head_type = 'SemiRotatedBLFCOSGAHead'
 loss_cls=dict(type='QualityFocalLoss', use_sigmoid=True, beta=2.0, loss_weight=1.0, activated=True)
+# bbox_head_type = 'SemiRotatedBLFCOSHead'
+# loss_cls=dict(type='FocalLoss', use_sigmoid=True, gamma=2.0, alpha=0.25, loss_weight=1.0)
+
 
 # 是否开启选择一致性自监督分支
-use_ss_branch=False
-ss_branch = None
+use_ss_branch=True
+ss_branch = dict(
+    nc=nc,
+    rand_angle_range=[45, 135], 
+    flip_p=0.0, 
+    # 'nearest', 'bilinear'
+    score_interpolate_mode='nearest',
+    box_interpolate_mode='nearest',
+    # 损失权重:
+    score_loss_w=0.1, 
+    box_loss_w=0.1
+)
 
 # 是否开启refine head
 use_refine_head=True
@@ -60,14 +73,14 @@ roi_head=dict(
     nc=nc,
     add_noise_p=0.5,
     # 'share_head' 'avg_pool' 'share_fchead'
-    roi_pooling = 'avg_pool', 
+    roi_pooling = 'share_fchead', 
     assigner='HungarianWithIoUMatching',
 )
 
 
 burn_in_steps = 6400
 # 是否导入权重
-# load_from = '/data/yht/code/sood-mcl/log/dtbaseline/DOTA1.5/ss-branch/global-w_gihead/joint-score-sigmoid_burn-in-12800_gi-head_all-refine-loss_box-O2M-loss_GA_detach-fpnfeat_ssloss-joint-jsd-dim0-w1.0_avgpoolroi3/latest.pth'
+# load_from = '/data/yht/code/sood-mcl/log/dtbaseline/DOTA1.5/ss-branch/global-w_gihead/joint-score-sigmoid_burn-in-12800_gi-head_all-refine-loss_box-O2M-loss_detach_GA_ssloss-joint-jsd-dim0-w1.0/latest.pth'
 load_from = None
 
 

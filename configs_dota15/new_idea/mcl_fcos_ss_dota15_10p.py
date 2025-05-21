@@ -42,8 +42,8 @@ ss_branch = dict(
     score_interpolate_mode='nearest',
     box_interpolate_mode='nearest',
     # 损失权重:
-    score_loss_w=1.0, 
-    box_loss_w=1.0
+    score_loss_w=0.1, 
+    box_loss_w=0.1
 )
 
 # 是否开启refine head
@@ -321,11 +321,11 @@ custom_hooks = [
 ]
 
 # evaluation
-# evaluation = dict(type="SubModulesDistEvalHook", interval=3200, metric='mAP',
-#                   save_best='mAP')
-# 单卡调试时推理报分布式的错，是BN的问题，在配置文件里加一个broadcast_这个参数
 evaluation = dict(type="SubModulesDistEvalHook", interval=3200, metric='mAP',
-                  save_best='mAP', broadcast_bn_buffer=False)
+                  save_best='mAP')
+# 单卡调试时推理报分布式的错，是BN的问题，在配置文件里加一个broadcast_这个参数
+# evaluation = dict(type="SubModulesDistEvalHook", interval=3200, metric='mAP',
+#                   save_best='mAP', broadcast_bn_buffer=False)
 
 
 # optimizer

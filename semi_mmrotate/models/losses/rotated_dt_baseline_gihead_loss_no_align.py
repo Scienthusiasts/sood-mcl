@@ -101,10 +101,12 @@ class RotatedDTBLGIHeadLoss(nn.Module):
         if mode == 'global_w':
             # 设置所有样本都为正样本, 均参与计算损失
             mask = torch.ones_like(t_scores, dtype=torch.bool)
-            # weight_mask基于联合置信度^beta
-            # weight_mask = t_joint_scores.pow(beta)
-            # weight_mask基于sigmoid(联合置信度)
-            weight_mask = 1 / (1 + torch.exp(-10 * t_joint_scores)).pow(10) - 1/1024. 
+            if beta==-1.:
+                # weight_mask基于sigmoid(联合置信度)
+                weight_mask = 1 / (1 + torch.exp(-10 * t_joint_scores)).pow(10) - 1/1024. 
+            else:
+                # weight_mask基于联合置信度^beta
+                weight_mask = t_joint_scores.pow(beta)
             fg_num = weight_mask.sum()
 
         if mode == 'sla':
@@ -190,7 +192,7 @@ class RotatedDTBLGIHeadLoss(nn.Module):
             roi_losses = student.roi_head.loss(
                 stu_fpn_feat, 
                 s_rbb_preds, s_cls_scores.sigmoid().reshape(bs, -1, self.nc), s_centernesses.sigmoid().reshape(bs, -1),
-                # teacher的你结果是作为gt
+                # teacher的结果作为gt
                 nms_t_bboxes_list, nms_t_labels_list,
                 unsup_img_metas,
                 train_mode='train_unsup'
@@ -261,6 +263,7 @@ class RotatedDTBLGIHeadLoss(nn.Module):
         if mode in ['topk', 'top_dps', 'catwise_top_dps']:
             unsup_loss_cls = loss_cls.sum() / fg_num
             unsup_loss_bbox = (loss_bbox * t_centernesses[pos_mask].sigmoid()).mean()
+            # unsup_loss_bbox = loss_bbox.mean()
             unsup_loss_centerness = loss_centerness.mean()
         if mode == 'global_w':
             # NOTE: 这里的分类损失不*weight_mask是因为分类会算负样本, 如果*weight_mask那么负样本的权重就很低(相当于负样本权重也应该高)

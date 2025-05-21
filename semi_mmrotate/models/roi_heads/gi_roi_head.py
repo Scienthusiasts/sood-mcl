@@ -59,7 +59,7 @@ class ShareHead(nn.Module):
         layers = []
         layers.append(self.dw_conv)
         layers.append(CustomBatchNorm2d(out_channels))
-        layers.append(nn.ReLU())
+        layers.append(nn.ReLU(inplace=False))
         return nn.Sequential(*layers)
 
 
@@ -104,7 +104,8 @@ class GIRoIHead(BaseModule):
                  bbox_roi_extractor,
                  bbox_coder,
                  nc,
-                 roi_pooling = 'avg_pool', # 'share_head
+                 add_noise_p,
+                 roi_pooling = 'avg_pool', 
                  assigner='HungarianWithIoUMatching',
                  **wargs
                  ):
@@ -114,6 +115,7 @@ class GIRoIHead(BaseModule):
         self.eps = 1e-7
         self.nc = nc
         self.hidden_dim = 256
+        self.add_noise_p = add_noise_p
         # 提取roi特征, 即RRoIAlign操作
         self.bbox_roi_extractor = build_roi_extractor(bbox_roi_extractor)
         # self.bbox_coder用于对回归结果进行编解码操作
@@ -233,13 +235,30 @@ class GIRoIHead(BaseModule):
         return batch_group_iou, batch_group_bboxes, batch_nms_bboxes, batch_nms_scores
     
 
-    def group_interact_forward(self, dense_roi_feats, nms_roi_feats):
+    def group_interact_forward(self, dense_roi_feats, dense_rois):
         """group交互模块(用自注意力+动态卷积进行交互)
+            Args:
+                dense_roi_feats: [total_group_nums, nums_per_group, 256] 从特征图中抠出并经过sharehead的groupboxes的roi特征
+                dense_rois:      [total_group_nums, nums_per_group, 5=(cx, cy, w, h, θ)] roi坐标(原图尺寸)
+            Returns: 
+                represent_interative_roi_feat: 经过组注意力交互过后的特征 [total_group_nums, nums_per_group, 256] 
         """
+        # 依据roi的坐标生成位置编码
+        # 5参转8参
+        poly_dense_rois = obb2poly(dense_rois.reshape(-1, 5), version='le90').reshape(-1, 8, 8)
+        # 归一化
+        norm_poly_dense_rois = normalize_polybboxes(poly_dense_rois, img_w=1024, img_h=1024)
+        pe = gen_bboxes_sine_embedings_cxcywha(norm_poly_dense_rois, embed_dims=32, temperature=20)
+        dense_roi_feats += pe
+        # 可视化
+        # plt.imshow(dense_roi_feats.reshape(-1, 256).detach().cpu().numpy())
+        # plt.savefig('feat.jpg', dpi=200)
+        # plt.imshow(pe.reshape(-1, 256).cpu().numpy())
+        # plt.savefig('pe.jpg', dpi=200)
+
         # TODO: 目前是组内交互, 只是局部交互. 是否需要加入全局交互, 即对nms_roi_feats之间的交互?)
         # 只取每个组的第一个预测作为query, 简化运算(这个预测代表每个group中最好的预测, 这个预测和其他预测交互就行了, 其他无所谓)
         # MHSA + LN:  out = Q = [total_group_nums, 1, 256], k = v = [total_group_nums, nums_per_group, 256]
-        # TODO: 位置编码
         # TODO: query 试试learnable
         represent_roi_feat = dense_roi_feats[:, 0, :].unsqueeze(1)
         represent_interative_roi_feat = self.attention_norm(self.attention(query=represent_roi_feat, key=dense_roi_feats, value=dense_roi_feats))
@@ -248,21 +267,54 @@ class GIRoIHead(BaseModule):
         return represent_interative_roi_feat
 
 
-    def head_forward(self, dense_roi_feats, nms_roi_feats):
+
+    def add_noise2bboxes(self, group_dense_bboxes, p=0.5):
+        """给分组后的bboxes加上高斯噪声
+            Args:
+                group_dense_bboxes: [group_nums * nums_per_group, 6=(batch_ind, cx, cy, w, h, a)]
+                p:                  以概率p对box加噪声
+            Return:
+                group_dense_bboxes: 加噪后的group_dense_bboxes
+        """
+        # 尺度噪声系数
+        scale_factor = torch.sqrt(abs(group_dense_bboxes[:, 2] * group_dense_bboxes[:, 3])) / 10
+        # 角度噪声系数
+        angle_k = 0.2
+        angle_s = 1.5
+        aspect_ratio = abs(group_dense_bboxes[:, 2]) / (abs(group_dense_bboxes[:, 3]) + 1e-7)
+        # 定义噪声标准差
+        cx_sigma = scale_factor * 0.1
+        cy_sigma = scale_factor * 0.1
+        w_sigma = scale_factor * 0.2
+        h_sigma = scale_factor * 0.2
+        angle_sigma = angle_k * torch.exp(-angle_s * abs(torch.log(aspect_ratio)))
+        box_sigma = torch.stack([cx_sigma, cy_sigma, w_sigma, h_sigma, angle_sigma], dim=1)
+        # 生成加噪boxes
+        gau_noise = torch.normal(mean = 0, std = box_sigma).to(group_dense_bboxes.device)
+        # 以概率p随机加噪
+        noise_mask = torch.rand(group_dense_bboxes.shape[0]).to(group_dense_bboxes.device)>p
+        gau_noise[noise_mask] = 0.
+        noise_boxes = group_dense_bboxes[:, 1:] + gau_noise
+        group_dense_bboxes[:, 1:] = noise_boxes
+
+        return group_dense_bboxes
+
+
+
+    def head_forward(self, dense_roi_feats, dense_rois):
         """这部分可以堆叠
             Args:
                 dense_roi_feats: [total_group_nums, nums_per_group, 256] 从特征图中抠出并经过sharehead的groupboxes的roi特征
-                nms_roi_feats:   [total_group_nums, 256] 从特征图中抠出的nmsboxes的roi特征
+                dense_rois:   [total_group_nums, nums_per_group, 5=(cx, cy, w, h, θ)] roi坐标(原图尺寸)
             Return:
                 dense_roi_feats: [total_group_nums, nums_per_group, 256] 交互后的roi特征
                 cls_score:       [total_gt_nums, cls_num] 预测头输出分类结果(未解码)
                 reg_delta:       [total_gt_nums, 5] 预测头输出回归结果(未解码)
         """
         N = dense_roi_feats.shape[0]
-
         '''接下来就是nms_roi_feats和dense_roi_feats如何交互了'''
         # [total_group_nums, nums_per_group, 256], [total_group_nums, 256] -> [total_group_nums, 256]
-        represent_interative_roi_feat = self.group_interact_forward(dense_roi_feats, nms_roi_feats).squeeze(1)
+        represent_interative_roi_feat = self.group_interact_forward(dense_roi_feats, dense_rois).squeeze(1)
         # represent_interative_roi_feat = nms_roi_feats
         # FFN [total_group_nums, 1, 256]
         represent_interative_roi_feat = self.ffn_norm(self.ffn(represent_interative_roi_feat))
@@ -305,24 +357,27 @@ class GIRoIHead(BaseModule):
         # list([group_nums, box_per_group], ..., [...]) list([group_nums, box_per_group, 7], ..., [...]) list([group_nums, 7], ..., [...]) list([group_nums, cls_num], ..., [...])
         batch_group_iou, batch_group_bboxes, batch_nms_bboxes, batch_nms_scores = self.grouping(rbb_preds, cls_score, centerness, img_meta, gt_bboxes, gt_labels)
         '''roialign+sharehead'''
-        # 这一步只是进行格式转换同时合并list为tensor而已: list([group_nums * nums_per_group, 5], ,..., [...]) -> [group_nums * nums_per_group, 6=(batch_ind, cx, cy, w, h, a)]
+        # rroialign操作, 这一步只是进行格式转换同时合并list为tensor而已: list([group_nums * nums_per_group, 5], ,..., [...]) -> [group_nums * nums_per_group, 6=(batch_ind, cx, cy, w, h, a)]
         dense_rois = rbbox2roi([boxes.reshape(-1, 7)[:, :5] for boxes in batch_group_bboxes])
-        # rroialign操作: [total_group_nums * nums_per_group, 256, 256, 7, 7] (total_group_nums已经是把batch拼在一起了)
-        nms_rois = rbbox2roi([boxes[:, :5] for boxes in batch_nms_bboxes])
+
+        # 给分组后的bboxes以概率p加上高斯噪声进行微小扰动
+        if self.add_noise_p > 0. and self.mode in ['train_unsup', 'train_sup']:
+            noise_dense_rois = self.add_noise2bboxes(dense_rois.clone(), p=self.add_noise_p)
+            # 可视化加噪前后的框, 一般注释:
+            # vis_gi_head_noise_batch(img_meta, len(batch_group_bboxes), dense_rois, noise_dense_rois, './vis_gihead_noisebox')
+            dense_rois = noise_dense_rois
+
         # 从特征图中抠出roi [total_group_nums * nums_per_group, 256, 7, 7]  total_group_nums=每个batch的group拼在一起
         dense_roi_feats = self.bbox_roi_extractor(fpn_feat, dense_rois)
-        nms_roi_feats = self.bbox_roi_extractor(fpn_feat, nms_rois)
         # 将roi_feat处理成1维 [total_group_nums, nums_per_group, 256]
-        dense_roi_feats = self.roi_pooling(dense_roi_feats).reshape(-1, 8, self.hidden_dim)
-        nms_roi_feats = self.roi_pooling(nms_roi_feats).reshape(-1, self.hidden_dim)
-
+        strip_dense_roi_feats = self.roi_pooling(dense_roi_feats).reshape(-1, 8, self.hidden_dim)
         '''bboxhead(包含特征交互和分类回归)'''
         # 输出的dense_roi_feats已经经过交互 (cls_score, reg_delta则是未解码的原始特征, 不是最终预测结果)
         # TODO: 是否需要堆叠预测头?
         # [total_group_nums, nums_per_group, 256] [total_group_nums, 16], [total_group_nums, 5]
-        dense_roi_feats, cls_score, reg_delta = self.head_forward(dense_roi_feats, nms_roi_feats)
-
+        strip_dense_roi_feats, cls_score, reg_delta = self.head_forward(strip_dense_roi_feats, dense_rois[:, 1:].reshape(-1, 8, 5))
         return batch_nms_bboxes, batch_nms_scores, cls_score, reg_delta
+
 
 
     def loss(self, fpn_feat, dense_rbb_preds, dense_cls_score, dense_centerness, gt_bboxes, gt_labels, img_meta, train_mode):
@@ -332,8 +387,8 @@ class GIRoIHead(BaseModule):
                 dense_rbb_preds:   [bs, total_anchor_num, 7=(cx, cy, w, h, θ, joint_score, label)]    
                 dense_cls_score:   [bs, total_anchor_num, cls_num] (已经过sigmoid)
                 dense_centerness:  [bs, total_anchor_num] (已经过sigmoid)
-                gt_bboxes:         list([group_nums, 5=(cx, cy, w, h, θ)], ..., [...]) 真实的gt
-                gt_labels:         list([group_nums], ..., [...]) 真实的gt标签
+                gt_bboxes:         list([group_nums, 5=(cx, cy, w, h, θ)], ..., [...]) 真实的gt / pgt
+                gt_labels:         list([group_nums], ..., [...]) 真实的gt标签 / pgt
                 img_meta:          batch图像信息和标注
                 train_mode:        当前的训练模式(训练有监督数据=sup, 训练伪标签=unsup)
 
@@ -355,7 +410,7 @@ class GIRoIHead(BaseModule):
         bboxes_preds = self.bbox_coder.decode(match_pred_gt_bboxes[0][valid_gt_mask], reg_delta[valid_gt_mask])
         bbox_loss = self.reg_loss(bboxes_preds, match_pred_gt_bboxes[1][valid_gt_mask]).mean()
         with torch.no_grad():
-            # 计算refine_box和gt的iou与nms_box与box的IoU，并计算差值, 能大概反馈改善程度
+            # 计算refine_box和gt的iou与nms_box与box的IoU，并计算差值, 能大概反映改善程度
             refine_iou = box_iou_rotated(bboxes_preds, match_pred_gt_bboxes[1][valid_gt_mask], aligned=True)
             nms_iou = box_iou_rotated(match_pred_gt_bboxes[0][valid_gt_mask], match_pred_gt_bboxes[1][valid_gt_mask], aligned=True)
             diff_iou = (refine_iou-nms_iou).mean()
@@ -380,6 +435,7 @@ class GIRoIHead(BaseModule):
             'iou_improve':diff_iou
             }
         return losses
+
 
 
     def infer(self, fpn_feat, dense_rbb_preds, dense_cls_score, dense_centerness, img_meta):

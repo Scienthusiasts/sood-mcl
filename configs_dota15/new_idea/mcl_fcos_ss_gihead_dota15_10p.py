@@ -42,8 +42,8 @@ ss_branch = dict(
     score_interpolate_mode='nearest',
     box_interpolate_mode='nearest',
     # 损失权重:
-    score_loss_w=1.0, 
-    box_loss_w=1.0
+    score_loss_w=0.1, 
+    box_loss_w=0.1
 )
 
 # 是否开启refine head
@@ -68,13 +68,14 @@ roi_head=dict(
         target_means=(.0, .0, .0, .0, .0),
         target_stds=(0.1, 0.1, 0.2, 0.2, 0.1)),
     nc=nc,
+    add_noise_p=0.0,
     # 'share_head' 'avg_pool' 'share_fchead'
     roi_pooling = 'avg_pool', 
     assigner='HungarianWithIoUMatching',
 )
 
 
-burn_in_steps = 50
+burn_in_steps = 6400
 # 是否导入权重
 # load_from = '/data/yht/code/sood-mcl/log/dtbaseline/DOTA1.5/ss-branch/global-w_gihead/joint-score-sigmoid_burn-in-12800_gi-head_all-refine-loss_box-O2M-loss_detach_GA_ssloss-joint-jsd-dim0-w1.0/latest.pth'
 load_from = None
@@ -344,11 +345,11 @@ custom_hooks = [
 ]
 
 # evaluation
-# evaluation = dict(type="SubModulesDistEvalHook", interval=3200, metric='mAP',
-#                   save_best='mAP')
-# 单卡调试时推理报分布式的错，是BN的问题，在配置文件里加一个broadcast_这个参数
 evaluation = dict(type="SubModulesDistEvalHook", interval=3200, metric='mAP',
-                  save_best='mAP', broadcast_bn_buffer=False)
+                  save_best='mAP')
+# 单卡调试时推理报分布式的错，是BN的问题，在配置文件里加一个broadcast_这个参数
+# evaluation = dict(type="SubModulesDistEvalHook", interval=3200, metric='mAP',
+#                   save_best='mAP', broadcast_bn_buffer=False)
 
 
 # optimizer
