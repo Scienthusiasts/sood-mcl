@@ -40,13 +40,13 @@ use_ss_branch=True
 ss_branch = dict(
     nc=nc,
     rand_angle_range=[45, 135], 
-    flip_p=0.0, 
+    flip_p=0, 
     # 'nearest', 'bilinear'
-    score_interpolate_mode='nearest',
+    score_interpolate_mode='bilinear',
     box_interpolate_mode='nearest',
     # 损失权重:
-    score_loss_w=1.0, 
-    box_loss_w=1.0
+    score_loss_w=0.05, 
+    box_loss_w=0.05
 )
 
 # 是否开启refine head
@@ -56,7 +56,7 @@ roi_head=None
 
 burn_in_steps = 6400
 # 是否导入权重
-# load_from = '/data/yht/code/sood-mcl/log/dtbaseline/DOTA1.5/ss-branch/global-w_gihead/joint-score-sigmoid_burn-in-12800_gi-head_all-refine-loss_box-O2M-loss_detach_GA_ssloss-joint-jsd-dim0-w1.0/latest.pth'
+# load_from = 'log/new/globalw/ss/burn-in-6400_joint-jsdloss-dim0-w0.1_roiuloss-w0.1_ga/latest.pth'
 load_from = None
 
 

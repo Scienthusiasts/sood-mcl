@@ -230,7 +230,7 @@ class SSBranch(nn.Module):
         # print(f"r_cls_min:{r_cls_scores[rot_mask].min()}, r_cls_max:{r_cls_scores[rot_mask].max()}")
         # print(r_cls_scores.sigmoid()[rot_mask].min(), r_cls_scores.sigmoid()[rot_mask].max())
         # # ss_loss_cls = self.QFLv2(o_cls_scores[rot_mask], r_cls_scores.sigmoid()[rot_mask], weight=torch.ones_like(o_cls_scores[rot_mask], device=o_cls_scores.device, dtype=torch.bool), reduction="none").sum() / o_weight_mask[rot_mask].sum()
-        # ss_loss_cls = self.JSDLoss(o_cls_scores[rot_mask], r_cls_scores.sigmoid()[rot_mask], to_distuibution=True, dist_dim=0, reduction='sum')
+        # ss_loss_cls = self.JSDLoss(o_cls_scores[rot_mask], r_cls_scores.sigmoid()[rot_mask], to_distribution=True, dist_dim=0, reduction='sum')
 
         '''自监督中心度一致损失'''
         # o_centernesses = torch.clamp(o_centernesses, e, 1. - e)
@@ -239,7 +239,7 @@ class SSBranch(nn.Module):
         # print(f"r_cnt_min:{r_centernesses[rot_mask].min()}, r_cnt_max:{r_centernesses[rot_mask].max()}")
         # # ss_loss_cnt_all = self.BCE_loss(o_centernesses[rot_mask], r_centernesses[rot_mask], reduction='none')
         # # ss_loss_cnt = (o_weight_mask[rot_mask] * ss_loss_cnt_all.reshape(-1)).sum() / o_weight_mask[rot_mask].sum()
-        # ss_loss_cnt_all = self.JSDLoss(o_centernesses[rot_mask], r_centernesses[rot_mask], to_distuibution=True, dist_dim=0, reduction='none')
+        # ss_loss_cnt_all = self.JSDLoss(o_centernesses[rot_mask], r_centernesses[rot_mask], to_distribution=True, dist_dim=0, reduction='none')
         # ss_loss_cnt = (o_weight_mask[rot_mask] * ss_loss_cnt_all.reshape(-1)).sum() / o_weight_mask[rot_mask].sum()
         
         '''自监督联合置信度一致损失(置信度和类别一起用类别损失优化)'''
@@ -250,9 +250,9 @@ class SSBranch(nn.Module):
         print(f"o_js_min:{o_joint_score[rot_mask].min()}, o_js_max:{o_joint_score[rot_mask].max()}")
         print(f"r_js_min:{r_joint_score[rot_mask].min()}, r_js_max:{r_joint_score[rot_mask].max()}")
         # ss_loss_joint_score = self.QFLv2(o_joint_score[rot_mask], r_joint_score[rot_mask], weight=torch.ones_like(o_joint_score[rot_mask], device=o_joint_score.device, dtype=torch.bool), reduction="none").sum() / o_weight_mask[rot_mask].sum()
-        # ss_loss_joint_score = self.JSDLoss(o_joint_score[rot_mask], r_joint_score[rot_mask], to_distuibution=True, dist_dim=1, reduction='mean', loss_weight=1e3)
-        # ss_loss_joint_score = self.JSDLoss(o_joint_score[rot_mask], r_joint_score[rot_mask], to_distuibution=True, dist_dim=1, reduction='sum', loss_weight=1.) / o_weight_mask[rot_mask].sum()
-        ss_loss_joint_score = self.JSDLoss(o_joint_score[rot_mask], r_joint_score[rot_mask], to_distuibution=True, dist_dim=0, reduction='sum')
+        # ss_loss_joint_score = self.JSDLoss(o_joint_score[rot_mask], r_joint_score[rot_mask], to_distribution=True, dist_dim=1, reduction='mean', loss_weight=1e3)
+        # ss_loss_joint_score = self.JSDLoss(o_joint_score[rot_mask], r_joint_score[rot_mask], to_distribution=True, dist_dim=1, reduction='sum', loss_weight=1.) / o_weight_mask[rot_mask].sum()
+        ss_loss_joint_score = self.JSDLoss(o_joint_score[rot_mask], r_joint_score[rot_mask], to_distribution=True, dist_dim=0, reduction='sum')
 
         return ss_loss_joint_score
     

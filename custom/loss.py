@@ -74,7 +74,7 @@ class JSDivLoss(nn.Module):
         self.KLDivLoss = nn.KLDivLoss(reduction='none')
         self.e = 1e-8
 
-    def forward(self, s, t, to_distuibution = True, dist_dim=0, reduction='mean', loss_weight=1.):
+    def forward(self, s, t, to_distribution = True, dist_dim=0, reduction='mean', loss_weight=1.):
         '''
             s:               输入分布 1, 形状为 [n,m] (其中一个维度表示分布的维度, 另一个维度表示有几个分布)
             t:               输入分布 2, 形状为 [n,m] (其中一个维度表示分布的维度, 另一个维度表示有几个分布)
@@ -82,7 +82,7 @@ class JSDivLoss(nn.Module):
             dist_dim:        表示哪一个维度表示分布的维度(默认0)
         '''
         # 将s和t第一维度转化为频率(和=1)
-        if to_distuibution:
+        if to_distribution:
             # 在归一化后加 self.e，然后再重新归一化, 避免直接加 self.e 可能会导致分布的变化
             # 将 s 和 t 归一化为概率分布(.sum一般不可能是0, 所以没加e)
             s = s / s.sum(dim=dist_dim, keepdim=True)
@@ -115,6 +115,81 @@ class JSDivLoss(nn.Module):
 
 
     
+
+
+
+class KLDivLoss(nn.Module):
+    '''KL散度 损失
+    '''
+    def __init__(self, ):
+        super(KLDivLoss, self).__init__()
+        self.KLDivLoss = nn.KLDivLoss(reduction='none')
+
+    def forward(self, s, t, to_distribution = True, dist_dim=1, reduction='mean', loss_weight=1.):
+        '''
+            s:               输入分布1, 大致均值0方差1, 形状为 [bs, n, dim] (其中一个维度表示分布的维度, 另一个维度表示有几个分布)
+            t:               输入分布2, 大致均值0方差1, 形状为 [bs, n, dim] (其中一个维度表示分布的维度, 另一个维度表示有几个分布)
+            to_distribution: 是否将输入归一化为概率分布
+            dist_dim:        表示哪一个维度表示分布的维度(默认1), 1或2
+        '''
+        if to_distribution:
+            # 将s和t第一维度转化为频率(和=1)
+            # 计算 s 的对数概率 (KLDivLoss的input要求)
+            # TODO: softmax是否要加温度系数
+            log_s = nn.LogSoftmax(dim=dist_dim)(s)
+            t = torch.softmax(t, dim=dist_dim)
+
+        # 调整输入形状，确保 nn.KLDivLoss 对分布维度计算 KLD(如果分布维度是 2, 则已经是最后一维无需转置)
+        if dist_dim == 1:
+            # 如果分布维度不是最后一维, 把分布维度调整到最后一维
+            log_s = log_s.transpose(1, 2)
+            t = t.transpose(1, 2)
+
+
+        # 注意: nn.KLDivLoss 默认认为分布的维度是最后一个维度
+        kld_loss = self.KLDivLoss(log_s, t) 
+        if reduction=='mean':
+            return kld_loss.sum(dim=-1).mean() * loss_weight
+        if reduction=='sum':
+            return kld_loss.sum() * loss_weight
+        if reduction=='none':
+            return kld_loss.mean(dim=-1)
+
+
+
+
+
+
+
+
+
+class SmoothL1Loss(nn.Module):
+    '''SmoothL1 损失
+    '''
+    def __init__(self, ):
+        super(SmoothL1Loss, self).__init__()
+        self.smoothl1 = nn.SmoothL1Loss(reduction='none')
+
+    def forward(self, s, t, reduction='mean', loss_weight=1.):
+        '''
+            s: 输入分布1, 大致均值0方差1, 形状为 [bs, n, dim] 
+            t: 输入分布2, 大致均值0方差1, 形状为 [bs, n, dim] 
+        '''
+        loss = self.smoothl1(s, t) 
+        # print(loss)
+        if reduction=='mean':
+            return loss.mean() * loss_weight
+        if reduction=='sum':
+            return loss.sum() * loss_weight
+        if reduction=='none':
+            return loss
+        
+
+
+
+
+
+
 
 
 class BCELoss(nn.Module):

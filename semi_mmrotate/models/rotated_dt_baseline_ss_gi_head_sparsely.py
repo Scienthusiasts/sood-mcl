@@ -27,9 +27,9 @@ from mmcv.ops import diff_iou_rotated_2d
 
 @ROTATED_DETECTORS.register_module()
 # GI的意思是group interactive, 即将之前的二阶段orcnn-roihead换成group proposals之间存在交互的roihead
-class RotatedDTBaselineGISS(RotatedSemiDetector):
+class RotatedDTBaselineGISSSparse(RotatedSemiDetector):
     def __init__(self, nc, use_ss_branch, ss_branch:dict, use_refine_head, model: dict, semi_loss, train_cfg=None, test_cfg=None, symmetry_aware=False, pretrained=None):
-        super(RotatedDTBaselineGISS, self).__init__(
+        super(RotatedDTBaselineGISSSparse, self).__init__(
             dict(teacher=build_detector(model), student=build_detector(model)),
             semi_loss,
             train_cfg=train_cfg,
@@ -60,15 +60,13 @@ class RotatedDTBaselineGISS(RotatedSemiDetector):
             self.SSBranch = SSBranch(**ss_branch)
         # 是否开启refine-roihead
         self.use_refine_head = use_refine_head
-        # clip蒸馏
-        # self.distillBranch = FGCLIPDistillBranch()
 
 
 
 
 
     def forward_train(self, imgs, img_metas, **kwargs):
-        super(RotatedDTBaselineGISS, self).forward_train(imgs, img_metas, **kwargs)
+        super(RotatedDTBaselineGISSSparse, self).forward_train(imgs, img_metas, **kwargs)
         gt_bboxes = kwargs.get('gt_bboxes')
         gt_labels = kwargs.get('gt_labels')
         # preprocess
@@ -163,10 +161,6 @@ class RotatedDTBaselineGISS(RotatedSemiDetector):
 
 
 
-        '''CLIP 有监督蒸馏分支'''
-        # clip_distill_loss = self.distillBranch.loss(sup_fpn_feat, format_data['sup']['img'], format_data['sup']['img_metas'])
-        # sup_losses['loss_clip_distill'] = clip_distill_loss
-
 
         # 组织全监督损失
         for key, val in sup_losses.items():
@@ -219,7 +213,6 @@ class RotatedDTBaselineGISS(RotatedSemiDetector):
 
 
             '''无监督分支前向, 得到特征图和推理结果'''
-            # TODO: torch.no_grad()是否需要去掉, teacher部分也和sparse label算损失
             with torch.no_grad():
                 # get teacher data
                 # NOTE:yan, 这里额外回传类别GT, 正样本索引, fpn的多尺度特征, 用于计算prototype
@@ -265,7 +258,7 @@ class RotatedDTBaselineGISS(RotatedSemiDetector):
                 use_refine_head=self.use_refine_head
             )
 
-            # 组织无监督损失
+            # 组织常规的无监督损失
             for key, val in self.logit_specific_weights.items():
                 if key in unsup_losses.keys():
                     unsup_losses[key] *= val
@@ -287,10 +280,6 @@ class RotatedDTBaselineGISS(RotatedSemiDetector):
                 losses['ss_loss_joint_score'] = ss_loss_joint_score
                 losses['ss_loss_box'] = ss_loss_box 
 
-
-            '''CLIP 无监督蒸馏分支'''
-            # clip_distill_loss = self.distillBranch.loss(s_fpn_feat, format_data[aug_orders[0]]['img'], format_data[aug_orders[0]]['img_metas']*2, mode='unsup')
-            # losses['unsup_clip_distill_loss'] = clip_distill_loss
 
 
 

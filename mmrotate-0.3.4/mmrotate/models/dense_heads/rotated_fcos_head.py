@@ -272,7 +272,6 @@ class RotatedFCOSHead(RotatedAnchorFreeHead):
         # centerness weighted iou loss
         centerness_denorm = max(
             reduce_mean(pos_centerness_targets.sum().detach()), 1e-6)
-
         if len(pos_inds) > 0:
             pos_points = flatten_points[pos_inds]
             if self.separate_angle:

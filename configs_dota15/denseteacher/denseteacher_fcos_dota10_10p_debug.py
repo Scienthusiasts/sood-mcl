@@ -5,10 +5,19 @@ from copy import deepcopy
 angle_version = 'le90'
 version = 1.0
 # 数据集路径:
-train_sup_image_dir =   f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train_10per/{version}/labeled/images/'
-train_sup_label_dir =   f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train_10per/{version}/labeled/annfiles/'
-train_unsup_image_dir = f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train_10per/{version}/unlabeled/images/'
-train_unsup_label_dir = f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train_10per/{version}/unlabeled/empty_annfiles/'
+# train_sup_image_dir =   f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train_10per/{version}/labeled/images/'
+# train_sup_label_dir =   f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train_10per/{version}/labeled/annfiles/'
+# train_unsup_image_dir = f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train_10per/{version}/unlabeled/images/'
+# train_unsup_label_dir = f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train_10per/{version}/unlabeled/empty_annfiles/'
+
+# 数据集路径(有监督分支用那些稀疏标注的数据)
+train_sup_image_dir =   f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train/images'
+train_sup_label_dir =   f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/sparse_train/{version}/sparse_ann_10per/train'
+train_unsup_image_dir = train_sup_image_dir
+# 数据集路径(无监督分支用那些稀疏标注+无标注的数据)
+train_unsup_label_dir = f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/sparse_train/{version}/sparse_ann_10per/train'
+# train_unsup_label_dir = f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/sparse_train/{version}/sparse_ann_10per/train_unlabeled'
+
 val_image_dir =         f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/val/images'
 val_label_dir =         f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/val/{version}/annfiles'
 test_image_dir =        f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/test/images'
@@ -20,7 +29,8 @@ topk = 0.01
 unsup_loss_weight = 1.0
 # just for debug:
 burn_in_steps = 64
-load_from = '/data/yht/code/sood-mcl/log/dtbaseline/DOTA1.0/10per_topk/k-1.0/iter_120000.pth'
+# load_from = '/data/yht/code/sood-mcl/log/dtbaseline/DOTA1.0/10per_topk/k-1.0/iter_120000.pth'
+load_from = None
 
 
 

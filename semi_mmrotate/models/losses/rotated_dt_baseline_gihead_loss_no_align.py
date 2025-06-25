@@ -164,7 +164,6 @@ class RotatedDTBLGIHeadLoss(nn.Module):
         # 注意cls_scores和centernesses都是未经过sigmoid()的logits
         t_cls_scores, t_bbox_preds, t_centernesses, _ = reshape_t_logits
         s_cls_scores, s_bbox_preds, s_centernesses, _ = reshape_s_logits
-
         # refine head 相关:
         if use_refine_head:
             '''对stundent的预测调整为gi_head接受的格式'''
@@ -212,7 +211,7 @@ class RotatedDTBLGIHeadLoss(nn.Module):
                     batch_t_res_labels.append(preds[:, 6])
 
             # 可视化(一般情况下注释)
-            # vis_unsup_bboxes_batch(img_metas, bs, nms_bboxes_list, proposal_list, batch_res_bboxes, './vis_unsup_bboxes')
+            # vis_unsup_bboxes_batch(unsup_img_metas, bs, nms_t_bboxes_list, t_rbb_preds, batch_t_res_bboxes, './vis_unsup_bboxes')
             # 2.送到head进行正负样本分配(nms后的结果作为gt) + 计算损失
             # cls_scores, bbox_preds, angle_preds, centernesses, _ = student_logits
             sup_losses, _, _, _, _, _, = student.bbox_head.loss(student_logits[0], student_logits[1], student_logits[2], student_logits[3], batch_t_res_bboxes, batch_t_res_labels,  None, None)

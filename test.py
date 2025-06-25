@@ -19,7 +19,8 @@ from mmrotate.datasets import build_dataset
 from mmrotate.models import build_detector
 from mmrotate.utils import compat_cfg, setup_multi_processes
 # yan:
-from semi_mmrotate.models.rotated_dt_baseline_ss_orcnn_head import RotatedDTBaseline
+# from semi_mmrotate.models.rotated_dt_baseline_ss_orcnn_head import RotatedDTBaseline
+from semi_mmrotate.models.rotated_dt_baseline_ss_gi_head import RotatedDTBaselineGISS
 from semi_mmrotate.models.mcl import MCLTeacher
 from mmcv.image import tensor2imgs
 from mmdet.core import encode_mask_results
@@ -214,6 +215,7 @@ def main():
         json_file = osp.join(args.work_dir, f'eval_{timestamp}.json')
 
     # build the dataloader
+    
     dataset = build_dataset(cfg.data.test)
     data_loader = build_dataloader(dataset, **test_loader_cfg)
 
@@ -298,9 +300,18 @@ def single_gpu_test(model,
             if get_feature_map:
                 result, dense_bboxes, dense_scores, dense_cnt, cls_scores, centernesses = model(return_loss=False, rescale=True, **data)
                 # 处理并可视化热力图
-                vis_feature_map(cls_scores, centernesses, data['img'][0].data[0], data['img_metas'][0].data[0][0]['ori_filename'])
+                # vis_feature_map(cls_scores, centernesses, data['img'][0].data[0], data['img_metas'][0].data[0][0]['ori_filename'])
                 # 处理并可视化dense boxes
                 # vis_dense_bboxes(dense_bboxes, dense_scores, dense_cnt, data['img'][0].data[0], data['img_metas'][0].data[0][0]['ori_filename'])
+                # for sparsely ann exp:
+                for i in range(len(result)):
+                    for cat_id in range(len(result[i])):
+                        if result[i][cat_id].shape[0] > 0:
+                            pos_mask = result[i][cat_id][:, -1]>0.1
+                            result[i][cat_id][:, -1][pos_mask] = np.minimum(result[i][cat_id][:, -1][pos_mask] * 2, 1.0)
+                            result[i][cat_id][:, -1][~pos_mask] *= 0.5
+
+            
             else:
                 result = model(return_loss=False, rescale=True, **data)
         batch_size = len(result)

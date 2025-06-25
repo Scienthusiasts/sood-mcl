@@ -129,6 +129,8 @@ class SemiRotatedBLFCOSGAHead(SemiRotatedBLFCOSHead):
                 loss_angle = self.loss_angle(
                     pos_angle_preds, pos_angle_targets, avg_factor=num_pos)
         else:
+            print(f"pos_inds:{len(pos_inds)}, gt_labels:{gt_labels}")
+            print(gt_bboxes)
             # weight当某张卡上无正样本时, 保证其他卡上的损失为0
             weight = 1 - local_has_pos
             loss_bbox = pos_bbox_preds.sum() * weight
@@ -156,6 +158,137 @@ class SemiRotatedBLFCOSGAHead(SemiRotatedBLFCOSHead):
                 loss_centerness=loss_centerness), flatten_labels, flatten_centerness, flatten_cls_scores, flatten_bbox_preds, flatten_angle_preds
 
 
+
+
+
+
+
+    # @force_fp32(
+    #     apply_to=('cls_scores', 'bbox_preds', 'angle_preds', 'centernesses'))
+    # def loss(self,
+    #          cls_scores,
+    #          bbox_preds,
+    #          angle_preds,
+    #          centernesses,
+    #          gt_bboxes,
+    #          gt_labels,
+    #          img_metas,
+    #          gt_bboxes_ignore=None):
+    #     # added by yan:
+    #     img_shape = centernesses[0].shape[2:-1] * 8
+
+    #     assert len(cls_scores) == len(bbox_preds) \
+    #            == len(angle_preds) == len(centernesses)
+    #     featmap_sizes = [featmap.size()[-2:] for featmap in cls_scores]
+    #     all_level_points = self.prior_generator.grid_priors(
+    #         featmap_sizes,
+    #         dtype=bbox_preds[0].dtype,
+    #         device=bbox_preds[0].device)
+    #     labels, bbox_targets, angle_targets, centerness_targets = self.get_targets(
+    #         all_level_points, gt_bboxes, gt_labels)
+
+    #     num_imgs = cls_scores[0].size(0)
+    #     # flatten cls_scores, bbox_preds and centerness
+    #     flatten_cls_scores = [
+    #         cls_score.permute(0, 2, 3, 1).reshape(-1, self.cls_out_channels)
+    #         for cls_score in cls_scores
+    #     ]
+    #     flatten_bbox_preds = [
+    #         bbox_pred.permute(0, 2, 3, 1).reshape(-1, 4)
+    #         for bbox_pred in bbox_preds
+    #     ]
+    #     flatten_angle_preds = [
+    #         angle_pred.permute(0, 2, 3, 1).reshape(-1, 1)
+    #         for angle_pred in angle_preds
+    #     ]
+    #     flatten_centerness = [
+    #         centerness.permute(0, 2, 3, 1).reshape(-1)
+    #         for centerness in centernesses
+    #     ]
+    #     flatten_cls_scores = torch.cat(flatten_cls_scores)
+    #     flatten_bbox_preds = torch.cat(flatten_bbox_preds)
+    #     flatten_angle_preds = torch.cat(flatten_angle_preds)
+    #     flatten_centerness = torch.cat(flatten_centerness)
+    #     flatten_labels = torch.cat(labels)
+    #     flatten_bbox_targets = torch.cat(bbox_targets)
+    #     flatten_angle_targets = torch.cat(angle_targets)
+    #     flatten_centerness_targets = torch.cat(centerness_targets)
+    #     # repeat points to align with bbox_preds
+    #     flatten_points = torch.cat(
+    #         [points.repeat(num_imgs, 1) for points in all_level_points])
+
+    #     # FG cat_id: [0, num_classes -1], BG cat_id: num_classes
+    #     bg_class_ind = self.num_classes
+    #     pos_inds = ((flatten_labels >= 0)
+    #                 & (flatten_labels < bg_class_ind)).nonzero().reshape(-1)
+        
+    #     num_pos = torch.tensor(len(pos_inds), dtype=torch.float, device=bbox_preds[0].device)
+    #     num_pos = max(reduce_mean(num_pos), 1.0)
+
+    #     pos_bbox_preds = flatten_bbox_preds[pos_inds]
+    #     pos_angle_preds = flatten_angle_preds[pos_inds]
+    #     pos_centerness = flatten_centerness[pos_inds]
+    #     pos_bbox_targets = flatten_bbox_targets[pos_inds]
+    #     pos_angle_targets = flatten_angle_targets[pos_inds]
+
+
+
+    #     loss_bbox = pos_bbox_preds.sum() * 0
+    #     loss_centerness = pos_centerness.sum() * 0
+    #     if self.separate_angle:
+    #         loss_angle = pos_angle_preds.sum() * 0
+    #     # print(len(pos_inds))
+    #     if len(pos_inds) > 0:
+    #     # if False:
+    #         pos_points = flatten_points[pos_inds]
+    #         if self.separate_angle:
+    #             bbox_coder = self.h_bbox_coder
+    #         else:
+    #             bbox_coder = self.bbox_coder
+    #             pos_bbox_preds = torch.cat([pos_bbox_preds, pos_angle_preds],
+    #                                        dim=-1)
+    #             pos_bbox_targets = torch.cat(
+    #                 [pos_bbox_targets, pos_angle_targets], dim=-1)
+    #         pos_decoded_bbox_preds = bbox_coder.decode(pos_points,
+    #                                                    pos_bbox_preds)
+    #         pos_decoded_target_preds = bbox_coder.decode(
+    #             pos_points, pos_bbox_targets)
+            
+    #         # smooth the centerness based on relative scale (mcl:aaai25)
+    #         img_scale = img_shape[0] * img_shape[1]
+    #         scale_factor = ((flatten_bbox_targets[:, 2] * flatten_bbox_targets[:, 3]) / img_scale).pow(0.2)
+    #         flatten_centerness_targets = flatten_centerness_targets ** scale_factor
+    #         pos_centerness_targets = flatten_centerness_targets[pos_inds]
+    #         # centerness loss
+    #         loss_centerness = self.loss_centerness(
+    #             pos_centerness, pos_centerness_targets, avg_factor=num_pos)
+    #         centerness_denorm = max(
+    #                 reduce_mean(pos_centerness_targets.sum().detach()), 1e-6)
+            
+    #         loss_bbox = self.loss_bbox(
+    #             pos_decoded_bbox_preds,
+    #             pos_decoded_target_preds,
+    #             weight=pos_centerness_targets,
+    #             avg_factor=centerness_denorm)
+    #         if self.separate_angle:
+    #             loss_angle = self.loss_angle(
+    #                 pos_angle_preds, pos_angle_targets, avg_factor=num_pos)
+
+    #     joint_confidence_scores = flatten_cls_scores.sigmoid() * flatten_centerness.sigmoid()[:, None]
+    #     loss_cls = self.loss_cls(joint_confidence_scores, (flatten_labels, flatten_centerness_targets), avg_factor=num_pos)
+    #     # loss以字典形式返回 
+    #     # NOTE: added by yan, 返回flatten_labels, 计算prototype会用到
+    #     if self.separate_angle:
+    #         return dict(
+    #             loss_cls=loss_cls,
+    #             loss_bbox=loss_bbox,
+    #             loss_angle=loss_angle,
+    #             loss_centerness=loss_centerness), flatten_labels, flatten_centerness, flatten_cls_scores, flatten_bbox_preds, flatten_angle_preds
+    #     else:
+    #         return dict(
+    #             loss_cls=loss_cls,
+    #             loss_bbox=loss_bbox,
+    #             loss_centerness=loss_centerness), flatten_labels, flatten_centerness, flatten_cls_scores, flatten_bbox_preds, flatten_angle_preds
 
 
 
@@ -244,7 +377,8 @@ class SemiRotatedBLFCOSGAHead(SemiRotatedBLFCOSHead):
         if num_gts == 0:
             return gt_labels.new_full((num_points,), self.num_classes), \
                    gt_bboxes.new_zeros((num_points, 4)), \
-                   gt_bboxes.new_zeros((num_points, 1))
+                   gt_bboxes.new_zeros((num_points, 1)), \
+                   gt_bboxes.new_zeros((num_points))
 
         areas = gt_bboxes[:, 2] * gt_bboxes[:, 3]
         # TODO: figure out why these two are different
@@ -311,4 +445,5 @@ class SemiRotatedBLFCOSGAHead(SemiRotatedBLFCOSHead):
         #     plt.imshow(lvl_t_gaussian_center.cpu().numpy())
         #     plt.savefig(os.path.join(root_dir, f"id_{id}_lvl_{lvl}.jpg"), dpi=200)
 
+        # print(labels.shape, bbox_targets.shape, angle_targets.shape, centerness_targets.shape)
         return labels, bbox_targets, angle_targets, centerness_targets

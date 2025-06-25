@@ -175,7 +175,9 @@ class SemiRotatedBLFCOSHead(RotatedAnchorFreeHead):
             **kwargs
         )
         return loss_dict, flatten_labels, flatten_centerness, flatten_cls_scores, flatten_bbox_preds, flatten_angle_preds
+
     
+
 
     def forward(self, feats):
         """Forward features from the upstream network.

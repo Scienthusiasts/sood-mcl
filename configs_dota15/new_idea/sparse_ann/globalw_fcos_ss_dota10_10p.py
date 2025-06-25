@@ -4,15 +4,16 @@ from copy import deepcopy
 
 '''重要的参数写在前面:'''
 # DOTA数据集版本(1.0 or 1.5)
-version = 1.5
-# 数据集路径
-train_sup_image_dir =   f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train_10per/{version}/labeled/images/'
-train_sup_label_dir =   f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train_10per/{version}/labeled/annfiles/'
-train_unsup_image_dir = f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train_10per/{version}/unlabeled/images/'
-train_unsup_label_dir = f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train_10per/{version}/unlabeled/empty_annfiles/'
-# full:
-# train_sup_image_dir = f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train/images/'
-# train_sup_label_dir = f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train/{version}/annfiles/'
+version = 1.0
+# 数据集路径(有监督分支用那些稀疏标注的数据)
+train_sup_image_dir =   f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train/images'
+train_sup_label_dir =   f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/sparse_train/{version}/sparse_ann_10per/train_labeled'
+train_unsup_image_dir = train_sup_image_dir
+# 数据集路径(无监督分支用那些稀疏标注+无标注的数据)
+train_unsup_label_dir = f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/sparse_train/{version}/sparse_ann_10per/train'
+# train_unsup_label_dir = f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/sparse_train/{version}/sparse_ann_10per/train_unlabeled'
+
+
 val_image_dir =         f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/val/images'
 val_label_dir =         f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/val/{version}/annfiles'
 test_image_dir =        f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/test/images'
@@ -50,38 +51,14 @@ ss_branch = dict(
 )
 
 # 是否开启refine head
-use_refine_head=True
-roi_head=dict(
-    type='GIRoIHead', # ORCNNRoIHead GIRoIHead
-    bbox_roi_extractor=dict(
-        type='RotatedSingleRoIExtractor',
-        roi_layer=dict(
-            type='RoIAlignRotated',
-            out_size=7,
-            sample_num=2,
-            clockwise=True),
-        out_channels=256,
-        featmap_strides=[8, 16, 32, 64, 128]),
-    bbox_coder=dict(
-        type='DeltaXYWHAOBBoxCoder',
-        angle_range=angle_version,
-        norm_factor=None,
-        edge_swap=True,
-        proj_xy=True,
-        target_means=(.0, .0, .0, .0, .0),
-        target_stds=(0.1, 0.1, 0.2, 0.2, 0.1)),
-    nc=nc,
-    add_noise_p=0.5,
-    # 'share_head' 'avg_pool' 'share_fchead'
-    roi_pooling = 'share_fchead', 
-    assigner='HungarianWithIoUMatching',
-)
+use_refine_head=False
+roi_head=None
 
 
-burn_in_steps = 64
+burn_in_steps = 6400
 # 是否导入权重
-load_from = '/data/yht/code/sood-mcl/log/new/globalw/ss_gihead/burn-in-6400_top0.03_O2M-only-boxloss_refine-allloss_sharefcheadroi_addnoise-p0.5_joint-jsdloss-dim0-w0.1_roiuloss-w0.1_ga_pe/latest.pth'
-# load_from = None
+# load_from = '/data/yht/code/sood-mcl/log/dtbaseline/DOTA1.5/ss-branch/global-w_gihead/joint-score-sigmoid_burn-in-12800_gi-head_all-refine-loss_box-O2M-loss_detach_GA_ssloss-joint-jsd-dim0-w1.0/latest.pth'
+load_from = None
 
 
 
@@ -196,7 +173,7 @@ detector = dict(
 )
 
 model = dict(
-    type="RotatedDTBaselineGISS",
+    type="RotatedDTBaselineGISSSparse",
     model=detector,
     nc=nc,
     # 核心部分:
@@ -399,34 +376,3 @@ workflow = [('train', 1)]   # mode, iters
 opencv_num_threads = 0
 # set multi-process start method as `fork` to speed up the training
 mp_start_method = 'fork'
-
-
-
-
-
-
-
-
-
-
-
-
-# inference on test dataset and format the output results
-# for submission. Note: the test set has no annotation.
-test_dataloader = dict(
-    batch_size=1,
-    num_workers=2,
-    persistent_workers=True,
-    drop_last=False,
-    sampler=dict(type='DefaultSampler', shuffle=False),
-    dataset=dict(
-        type=dataset_type,
-        data_root='/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/',
-        data_prefix=dict(img_path='test/images/'),
-        test_mode=True,
-        pipeline=test_pipeline))
-test_evaluator = dict(
-    type='DOTAMetric',
-    format_only=True,
-    merge_patches=True,
-    outfile_prefix='./log/test_eval')

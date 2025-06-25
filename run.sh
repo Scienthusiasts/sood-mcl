@@ -1,6 +1,6 @@
 #!/usr/bin/bash
-export CUDA_VISIBLE_DEVICES=0,1
-# export CUDA_VISIBLE_DEVICES=2,3
+# export CUDA_VISIBLE_DEVICES=0,1
+export CUDA_VISIBLE_DEVICES=2,3
 # export CUDA_VISIBLE_DEVICES=4,5
 # export CUDA_VISIBLE_DEVICES=6,7
 
@@ -84,10 +84,10 @@ cd /data/yht/code/sood-mcl
 #     --work-dir log/dtbaseline/debug/dtbaseline
 
 # 10per_dtbaseline_gihead_ss_train DOTA1.5 debug # CUDA_LAUNCH_BLOCKING=1 
-/home/yht/.conda/envs/sood-mcl/bin/python -m torch.distributed.launch --node_rank=0 --master_addr="127.0.0.1" --nproc_per_node=2 --nnodes=1 --master_port=29550\
-    train.py configs_dota15/denseteacher_baseline/denseteacher_fcos_refineGIhead_ss_dota15_10p_debug.py \
-    --launcher pytorch \
-    --work-dir log/dtbaseline_gi/debug
+# /home/yht/.conda/envs/sood-mcl/bin/python -m torch.distributed.launch --node_rank=0 --master_addr="127.0.0.1" --nproc_per_node=2 --nnodes=1 --master_port=29550\
+#     train.py configs_dota15/denseteacher_baseline/denseteacher_fcos_refineGIhead_ss_dota15_10p_debug.py \
+#     --launcher pytorch \
+#     --work-dir log/dtbaseline_gi/debug
 
 # 10per_denseteacher_train DOTA1.5 debug # CUDA_LAUNCH_BLOCKING=1 
 # /home/yht/.conda/envs/sood-mcl/bin/python -m torch.distributed.launch --node_rank=0 --master_addr="127.0.0.1" --nproc_per_node=2 --nnodes=1 --master_port=29550\

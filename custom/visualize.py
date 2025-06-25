@@ -609,3 +609,108 @@ def vis_gi_head_noise_batch(img_metas, bs, batch_dense_rois, batch_noise_dense_r
         if not os.path.exists(root_dir):os.makedirs(root_dir)
         img_save_path = f"{root_dir}/{img_name}"
         cv2.imwrite(img_save_path, img)
+
+
+
+def vis_clip_feat_batch(fgclip, batch_clip_dense_feat, batch_img, batch_img_metas, save_dir):
+    '''可视化fg-clip输出的稠密特征
+    '''
+    if not os.path.exists(save_dir):os.makedirs(save_dir)
+    device = batch_clip_dense_feat.device
+    # 特征图预处理
+    captions = ["airplane in the image"]
+    batch_clip_dense_feat = batch_clip_dense_feat / batch_clip_dense_feat.norm(p=2, dim=-1, keepdim=True)
+    caption_input = torch.tensor(fgclip.tokenizer(captions, max_length=77, padding="max_length", truncation=True).input_ids, dtype=torch.long, device=device)
+    text_feature = fgclip.model.get_text_features(caption_input,walk_short_pos=True)
+    text_feature = text_feature / text_feature.norm(p=2, dim=-1, keepdim=True)
+    batch_sim = batch_clip_dense_feat.squeeze() @ text_feature.squeeze().T
+    batch_sim = batch_sim.reshape(-1, 24, 24).cpu().numpy()
+
+    # batch可视化操作
+    for sim_feat, img, img_metas in zip(batch_sim, batch_img, batch_img_metas):
+    
+        # 原图预处理
+        std = np.array([58.395, 57.12 , 57.375]) / 255.
+        mean = np.array([123.675, 116.28 , 103.53]) / 255.
+        img = img.permute(1,2,0).cpu().numpy()
+        img = np.clip(img * std + mean, 0, 1)
+        img = (img * 255).astype(np.uint8)
+        print(img.shape)
+        print('='*100)
+        # 特征图预处理
+        sim_feat = cv2.resize(sim_feat, (img.shape[0], img.shape[1]), interpolation=cv2.INTER_LINEAR)
+        sim_feat = (sim_feat - np.min(sim_feat)) / (np.max(sim_feat) - np.min(sim_feat))
+        sim_feat = (sim_feat * 255).astype(np.uint8)
+        # 可视化
+        # 灰度转伪彩色图像
+        sim_feat = cv2.applyColorMap(sim_feat, cv2.COLORMAP_JET)
+        # heatmap和原图像叠加显示
+        heatmap_img = cv2.addWeighted(sim_feat, 0.3, img, 0.7, 0)
+        cv2.imwrite(os.path.join(save_dir, img_metas['ori_filename']), heatmap_img)
+
+
+        
+def vis_sparse_data(format_data, save_dir='./vis_strong_weak_img'):
+    if not os.path.exists(save_dir):os.makedirs(save_dir)
+    # 强增强的图像 [bs, 3, 1024, 1024]
+    batch_strong_img = format_data['unsup_strong']['img']
+    batch_strong_img_meta = format_data['unsup_strong']['img_metas']
+    batch_strong_gt_bboxes = format_data['unsup_strong']['gt_bboxes']
+    batch_strong_gt_labels = format_data['unsup_strong']['gt_labels']
+    # 弱增强的图像 [bs, 3, 1024, 1024]
+    batch_weak_img = format_data['unsup_weak']['img']
+    batch_weak_img_meta = format_data['unsup_weak']['img_metas']
+    batch_weak_gt_bboxes = format_data['unsup_weak']['gt_bboxes']
+    batch_weak_gt_labels = format_data['unsup_weak']['gt_labels']
+
+    # 遍历 batch 中的每一对图像
+    for i, (strong_img, strong_img_meta, strong_gt_bboxes, strong_gt_labels, 
+             weak_img, weak_img_meta, weak_gt_bboxes, weak_gt_labels) in enumerate(zip(
+        batch_strong_img, batch_strong_img_meta, batch_strong_gt_bboxes, batch_strong_gt_labels,
+        batch_weak_img, batch_weak_img_meta, batch_weak_gt_bboxes, batch_weak_gt_labels)):
+        '''图像处理'''
+        # 原图预处理
+        std = np.array([58.395, 57.12, 57.375]) / 255.
+        mean = np.array([123.675, 116.28, 103.53]) / 255.
+        # 处理 strong_img
+        strong_img = strong_img.permute(1, 2, 0).cpu().numpy()
+        strong_img = np.clip(strong_img * std + mean, 0, 1)
+        strong_img = (strong_img * 255).astype(np.uint8) 
+        strong_img = np.ascontiguousarray(strong_img) # 确保图像数据是连续内存布局
+        # 处理 weak_img
+        weak_img = weak_img.permute(1, 2, 0).cpu().numpy()
+        weak_img = np.clip(weak_img * std + mean, 0, 1)
+        weak_img = (weak_img * 255).astype(np.uint8)
+        weak_img = np.ascontiguousarray(weak_img) # 确保图像数据是连续内存布局
+
+        '''box绘制'''
+        if strong_gt_labels.shape[0]>0:
+            # 5参转8参
+            poly_strong_gts = obb2poly(strong_gt_bboxes).cpu().numpy().astype(np.int32)
+            poly_weak_gts = obb2poly(weak_gt_bboxes).cpu().numpy().astype(np.int32)
+            # 可视化strong gts + weak gts
+            strong_img = OpenCVDrawBox(strong_img, poly_strong_gts, (0,255,0), 2)
+            weak_img = OpenCVDrawBox(weak_img, poly_weak_gts, (0,255,0), 2)
+
+        '''绘制+保存'''
+        # 获取图像名
+        img_name = strong_img_meta['ori_filename']
+        # 创建一行两列的画布
+        plt.figure(figsize=(12, 6))
+        # 绘制 strong_img
+        plt.subplot(1, 2, 1)
+        plt.imshow(strong_img)
+        plt.title(f'Strong Augmented Image')
+        plt.axis('off')
+        # 绘制 weak_img
+        plt.subplot(1, 2, 2)
+        plt.imshow(weak_img)
+        plt.title(f'Weak Augmented Image')
+        plt.axis('off')
+        
+        # 调整布局并保存
+        plt.tight_layout()
+        plt.savefig(os.path.join(save_dir, img_name), bbox_inches='tight', dpi=150)
+        plt.close()
+
+

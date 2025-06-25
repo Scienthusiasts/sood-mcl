@@ -416,13 +416,13 @@ class GIRoIHead(BaseModule):
             diff_iou = (refine_iou-nms_iou).mean()
 
         # 可视nms_bboxes和gi_head输出的bboxes对比(默认注释)
-        # if self.mode=='train_sup':
+        # if self.mode=='train_unsup':
         #     all_bboxes_preds = self.bbox_coder.decode(match_pred_gt_bboxes[0][valid_gt_mask], reg_delta[valid_gt_mask])
         #     vis_gi_head_bboxes_batch(img_meta, len(batch_nms_bboxes), batch_idx[valid_gt_mask], match_pred_gt_bboxes[0][valid_gt_mask], all_bboxes_preds, './vis_gi_bboxes_unsup')
 
-        #     vis_cls_score = cls_score.sigmoid()
-        #     cat_nms_scores = torch.cat(batch_nms_scores, dim=0)
-        #     vis_HM_scores(vis_cls_score.unsqueeze(0), match_gt_logits.unsqueeze(0), img_meta, './vis_unsup_score')
+            # vis_cls_score = cls_score.sigmoid()
+            # cat_nms_scores = torch.cat(batch_nms_scores, dim=0)
+            # vis_HM_scores(vis_cls_score.unsqueeze(0), match_gt_logits.unsqueeze(0), img_meta, './vis_unsup_score')
 
         '''分类损失'''
         cls_score = cls_score.sigmoid()

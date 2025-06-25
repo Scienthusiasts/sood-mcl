@@ -6,7 +6,8 @@ class SemiDataset(ConcatDataset):
 
     def __init__(self, sup: dict, unsup: dict, **kwargs):
         super().__init__([build_dataset(sup), build_dataset(unsup)], **kwargs)
-
+    
+    # 下面这两个函数似乎用不到
     @property
     def sup(self):
         return self.datasets[0]
@@ -14,3 +15,19 @@ class SemiDataset(ConcatDataset):
     @property
     def unsup(self):
         return self.datasets[1]
+
+
+
+
+
+@DATASETS.register_module()
+class SparseDataset(ConcatDataset):
+    """Wrapper for sparsesupervised od."""
+
+    def __init__(self, unsup: dict, **kwargs):
+        super().__init__([build_dataset(unsup)], **kwargs)
+
+    # 下面这个函数似乎用不到
+    @property
+    def unsup(self):
+        return self.datasets[0]

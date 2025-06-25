@@ -348,3 +348,43 @@ def normalize_polybboxes(bboxes, img_w, img_h):
     # 归一化 x0,y0,x1,y1,x2,y2,x3,y3
     normalized_bboxes = normalized_bboxes / scale_factor
     return normalized_bboxes
+
+
+
+
+
+def revert_shape_single(reshape_logits, feat_sizes, bs=1):
+    """将 reshape_logits 恢复为原始的多尺度 logits 组织形式
+    
+    Args:
+        reshape_logits (Tensor): [total_grid_num] 或 [total_grid_num, dim]
+        feat_sizes (list): 各层特征图的尺寸列表，如 [128, 64, 32, 16, 8]
+        bs (int): batch size，默认为1
+        
+    Returns:
+        list: 恢复后的 logits 列表，每个元素形状为 [bs, dim, h, w]
+    """
+    # 确保输入是二维的 [total_grid_num, dim]
+    if reshape_logits.ndim == 1:
+        reshape_logits = reshape_logits.unsqueeze(-1)  # [total_grid_num, 1]
+    
+    total_grid_num, dim = reshape_logits.shape
+    
+    # 计算各层网格数并验证
+    grid_sizes = [s*s for s in feat_sizes]
+    assert sum(grid_sizes) * bs == total_grid_num, (
+        f"特征图尺寸总和{sum(grid_sizes)}*bs={bs}≠输入tensor的网格数{total_grid_num}")
+    
+    # 先按bs分割，再按特征图层级分割
+    split_by_bs = torch.split(reshape_logits, sum(grid_sizes), dim=0)
+    restored_logits = []
+    
+    for b in range(bs):
+        split_logits = torch.split(split_by_bs[b], grid_sizes, dim=0)
+        for i, (logit, size) in enumerate(zip(split_logits, feat_sizes)):
+            if b == 0:  # 第一次处理时初始化
+                restored_logits.append(torch.empty(bs, dim, size, size, 
+                                                device=reshape_logits.device))
+            restored_logits[i][b] = logit.view(size, size, dim).permute(2, 0, 1)
+    
+    return restored_logits

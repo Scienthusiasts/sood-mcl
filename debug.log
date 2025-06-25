@@ -1,27 +1,20 @@
 # 推理整个验证集并可视化:
-# dt_baseline
+# globalw val (sparsely ann)
 python test.py \
---config configs_dota15/denseteacher_baseline/denseteacher_fcos_dota10_10p.py \
---checkpoint log/dtbaseline/DOTA1.5/10per_global-w_prototype-only-update/w1.0-bgd-truenormema-w-unsup_joint-score-beta-2.0_burn-in-12800/latest.pth \
---work-dir log/dtbaseline/DOTA1.0/10per_prototype/only-update_wo-random-init/eval_result \
---gpu-ids 7 \
+--config configs_dota15/sparse_new_idea/globalw_fcos_ss_gihead_dota10_10p_wosupbranch.py \
+--checkpoint log/new_sparse/1.0/globalw_burn-in-120000_ga_10per/latest.pth \
+--work-dir log/eval_result \
+--gpu-ids 1 \
 --eval mAP \
---out log/dtbaseline/DOTA1.0/10per_prototype/only-update_wo-random-init/eval_result/eval.pkl \
+--out log/new_sparse/1.0/globalw_burn-in-120000_ga_10per/eval_result/eval.pkl \
 --get-feature-map \
 --cfg-options cfg.model.pretrained=None \
---show-dir log/dtbaseline/DOTA1.0/10per/eval_result/vis_result 
+--show-score-thr 0.1 \
+--show-dir log/new_sparse/1.0/globalw_burn-in-120000_ga_10per/eval_result/vis_result \
 
-# mcl
-python test.py \
---config configs_dota15/mcl/mcl_fcos_dota15_10p_big_img.py \
---checkpoint log/mcl/DOTA1.5/10per/latest.pth \
---work-dir log/mcl/DOTA1.5/10per/eval_result \
---gpu-ids 7 \
---eval mAP \
---out log/mcl/DOTA1.5/10per/eval_result/eval.pkl \
---show-dir log/dtbaseline/DOTA1.0/10per/eval_result/vis_result \
---cfg-options cfg.model.pretrained=None \
---get-feature-map True \
+
+
+
 
 
 # 终端输出日志重定向:
@@ -30,8 +23,9 @@ sh run.sh > log/dtbaseline/DOTA1.5/10per_denoise/global-w/joint-score-beta-2.0_b
 
 
 
-
-
+# pytorch下载
+pip install torch==2.1.0 torchvision==0.16.0 --index-url https://download.pytorch.org/whl/cu118
+pip install torch==1.13.1+cu117 torchvision==0.14.1+cu117 --extra-index-url https://download.pytorch.org/whl/cu117
 
 
 
@@ -212,6 +206,23 @@ s的proposal给s二阶段头做微调训练
 原来score_thr=0.2, 如果改成score_thr=0.1,best的mAP会降1.5个点左右
 
 
+# 25 0531 加入fgclip蒸馏(Pytorch1.13.1-> 2.1.0):
+1. /home/yht/.conda/envs/sood-mcl/lib/python3.9/site-packages/mmcv/parallel/_functions.py: 这个文件需要修改一下, 否则报错:
+if device.type == "cpu":
+    AttributeError: 'int' object has no attribute 'type'
+
+2. /home/yht/.conda/envs/sood-mcl/lib/python3.9/site-packages/mmcv/parallel/distributed.py: 这个文件需要修改一下, 否则报错:
+AttributeError: 'MMDistributedDataParallel' object has no attribute '_use_replicated_tensor_module'
+
+3.要同时输出dense_image_feature 和 image_feature, 可以修改下面这个文件里相对应的函数:
+/home/yht/.cache/huggingface/modules/transformers_modules/qihoo360/fg-clip-large/19c2df7667052518ade09341652562b89b1332da/modeling_fgclip.py
+
+
+
+
+
+
+
 
 
 
@@ -266,6 +277,15 @@ RuntimeError: NCCL communicator was aborted on rank 0.  Original reason for fail
 后面发现直接导致的原因是是对特征执行旋转操作, 空白部分填充0, 在计算 F.binary_cross_entropy 时会报错, 如果填充一个不为0但是很小的错, 就不会报错了
 
 再之后, 发现训练到中途依然会报这个错, 且是由于加上了ss_loss_box引起的(只加ss_loss_cnt和ss_loss_cls能完整的训练完) 目前还未发现是什么原因
+
+20250603:
+在 /home/yht/.conda/envs/sood-mcl/lib/python3.9/site-packages/mmdet/models/losses/gfocal_loss.py 下:
+在pos = ((label >= 0) & (label < bg_class_ind)).nonzero().squeeze(1) 之前加上(重跑实验中, 不清楚是否有效) 
+
+pred = torch.clamp(pred, min=1e-7, max=1-1e-7)  
+score = torch.clamp(score, min=1e-7, max=1-1e-7) 
+label = torch.clamp(label, min=0, max=pred.size(1))
+
 
 
 
