@@ -5,3 +5,6 @@ from .semi_rotated_fcos_head_iou import SemiRotatedFCOSHeadIOU
 # yan
 from .semi_rotated_baseline_fcos_head import SemiRotatedBLFCOSHead
 from .semi_rotated_baseline_fcos_ga_head import SemiRotatedBLFCOSGAHead
+
+from .sparse_rotated_baseline_fcos_head import SparseRotatedBLFCOSHead
+from .sparse_rotated_baseline_fcos_ga_head import SparseRotatedBLFCOSGAHead

@@ -1,7 +1,7 @@
 #!/usr/bin/bash
 # export CUDA_VISIBLE_DEVICES=0,1
-export CUDA_VISIBLE_DEVICES=2,3
-# export CUDA_VISIBLE_DEVICES=4,5
+# export CUDA_VISIBLE_DEVICES=2,3
+export CUDA_VISIBLE_DEVICES=4,5
 # export CUDA_VISIBLE_DEVICES=6,7
 
 # training 
@@ -174,11 +174,11 @@ cd /data/yht/code/sood-mcl
 
 
 # 10per_globalw_gihead_ss 
-# sh run_new.sh > log/new/globalw/ss_gihead/burn-in-6400_top0.03_O2M-only-boxloss_refine-allloss_sharefcheadroi_addnoise-p0.5_joint-jsdloss-dim0-w0.1_roiuloss-w0.1_ga_pe/terminal_log.log 2>&1
+# sh run_new.sh > log/new/globalw/ss_gihead/burn-in-6400_top0.03_O2M-only-boxloss_refine-allloss_sharefcheadroi_addnoise-p0.5_joint-jsdloss-dim0-w0.1_roiuloss-w0.1_ga_pe2/terminal_log.log 2>&1
 # /home/yht/.conda/envs/sood-mcl/bin/python -m torch.distributed.launch --node_rank=0 --master_addr="127.0.0.1" --nproc_per_node=2 --nnodes=1 --master_port=29560\
 #     train.py configs_dota15/new_idea/globalw_fcos_ss_gihead_dota15_10p.py \
 #     --launcher pytorch \
-#     --work-dir log/new/globalw/ss_gihead/burn-in-6400_top0.03_O2M-only-boxloss_refine-allloss_sharefcheadroi_addnoise-p0.5_joint-jsdloss-dim0-w0.1_roiuloss-w0.1_ga_pe
+#     --work-dir log/new/globalw/ss_gihead/burn-in-6400_top0.03_O2M-only-boxloss_refine-allloss_sharefcheadroi_addnoise-p0.5_joint-jsdloss-dim0-w0.1_roiuloss-w0.1_ga_pe2
 
 
 
@@ -246,11 +246,13 @@ cd /data/yht/code/sood-mcl
 
 '''sparsely globalw dota1.0'''
 # 10per_globalw # CUDA_LAUNCH_BLOCKING=1 
-# sh run_new.sh > log/new_sparse/1.0/globalw_burn-in-120000_ga_100per/terminal_log.log 2>&1
-/home/yht/.conda/envs/sood-mcl/bin/python -m torch.distributed.launch --node_rank=0 --master_addr="127.0.0.1" --nproc_per_node=2 --nnodes=1 --master_port=29562 --use_env\
+# sh run_new.sh > log/new_sparse/1.0/globalw_burn-in-12800_ga_sfpm-thres0.05-fn-allweight-thres1.0-beta5.0_10per/terminal_log.log 2>&1
+/home/yht/.conda/envs/sood-mcl/bin/python -m torch.distributed.launch --node_rank=0 --master_addr="127.0.0.1" --nproc_per_node=2 --nnodes=1 --master_port=29564 --use_env\
     train.py configs_dota15/sparse_new_idea/globalw_fcos_ss_gihead_dota10_10p_wosupbranch.py \
     --launcher pytorch \
-    --work-dir log/new_sparse/1.0/globalw_burn-in-120000_ga_100per
+    --work-dir log/new_sparse/1.0/globalw_burn-in-12800_ga_sfpm-thres0.05-fn-allweight-thres1.0-beta5.0_10per
+
+
 
 '''sparsely globalw dota1.5'''
 # 10per_globalw # CUDA_LAUNCH_BLOCKING=1 
@@ -259,3 +261,5 @@ cd /data/yht/code/sood-mcl
 #     train.py configs_dota15/sparse_new_idea/globalw_fcos_ss_gihead_dota10_10p_wosupbranch.py \
 #     --launcher pytorch \
 #     --work-dir log/new_sparse/1.5/globalw_burn-in-120000_ga_1per
+
+

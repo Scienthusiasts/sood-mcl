@@ -9,8 +9,8 @@ ann_ratio = 10
 # 数据集路径(无监督分支用那些稀疏标注+无标注的数据)
 train_unsup_image_dir = f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train/images'
 # train_unsup_label_dir = f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/sparse_PECL/{version}/sparse_ann_10per/train' 
-# train_unsup_label_dir = f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/sparse_s2teacher/train/{version}/annfiles_{ann_ratio}per'
-train_unsup_label_dir = f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train/{version}/annfiles' # 全标注
+train_unsup_label_dir = f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/sparse_s2teacher/train/{version}/annfiles_{ann_ratio}per'
+# train_unsup_label_dir = f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train/{version}/annfiles' # 全标注
 val_image_dir =         f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/val/images'
 val_label_dir =         f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/val/{version}/annfiles'
 test_image_dir =        f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/test/images'
@@ -19,7 +19,7 @@ angle_version = 'le90'
 # 类别数
 nc = 15
 # 伪标签筛选超参
-semi_loss = dict(type='RotatedDTBLGIHeadLoss', cls_channels=nc, loss_type='origin', bbox_loss_type='l1', 
+semi_loss = dict(type='RotatedSparseDTBLLoss', cls_channels=nc, loss_type='origin', bbox_loss_type='l1', 
                  # 'topk', 'top_dps', 'catwise_top_dps', 'global_w', 'sla'
                  p_selection = dict(mode='global_w', k=0.01, beta=-1.), # 当mode=='top_dps'时, beta为S_pds的权重系数
                  )
@@ -27,9 +27,9 @@ semi_loss = dict(type='RotatedDTBLGIHeadLoss', cls_channels=nc, loss_type='origi
 # 无监督分支权重
 unsup_loss_weight = 1.0
 # 是否使用高斯椭圆标签分配 (注意GA分配得搭配QualityFocalLoss)
-bbox_head_type = 'SemiRotatedBLFCOSGAHead'
-loss_cls=dict(type='QualityFocalLoss', use_sigmoid=True, beta=2.0, loss_weight=1.0, activated=True)
-# bbox_head_type = 'SemiRotatedBLFCOSHead'
+bbox_head_type = 'SparseRotatedBLFCOSGAHead'
+loss_cls=dict(type='QualityFocalLoss', use_sigmoid=True, beta=2.0, loss_weight=1.0, activated=True, reduction='none')
+# bbox_head_type = 'SparseRotatedBLFCOSHead'
 # loss_cls=dict(type='FocalLoss', use_sigmoid=True, gamma=2.0, alpha=0.25, loss_weight=1.0)
 
 
@@ -86,9 +86,9 @@ ss_branch=None
 use_refine_head=False
 roi_head=None
 
-burn_in_steps = 120000
+burn_in_steps = 12800
 # 是否导入权重
-# load_from = '/data/yht/code/sood-mcl/log/dtbaseline/DOTA1.0/10per_global-w/joint-score_beta-2.0/latest.pth'
+# load_from = 'log/new_sparse/1.0/globalw_burn-in-12800_ga_sfpm-thres0.1-fn-allweight-thres1.0-beta5.0_10per/latest.pth'
 load_from = None
 
 
@@ -102,7 +102,7 @@ load_from = None
 
 # model settings
 detector = dict(
-    type='SemiRotatedBLRefineFCOS',
+    type='SparseRotatedBLRefineFCOS',
     backbone=dict(
         type='ResNet',
         depth=50,
@@ -138,9 +138,9 @@ detector = dict(
         bbox_coder=dict(
             type='DistanceAnglePointCoder', angle_version=angle_version),
         loss_cls=loss_cls,
-        loss_bbox=dict(type='RotatedIoULoss', loss_weight=1.0),
+        loss_bbox=dict(type='RotatedIoULoss', loss_weight=1.0, reduction='none'),
         loss_centerness=dict(
-            type='CrossEntropyLoss', use_sigmoid=True, loss_weight=1.0)),
+            type='CrossEntropyLoss', use_sigmoid=True, loss_weight=1.0, reduction='none')),
     # 这部分充当去噪微调模块:
     # (roi_head, train_cfg, test_cfg): reference: /data/yht/code/sood-mcl/mmrotate-0.3.4/configs/oriented_rcnn/oriented_rcnn_r50_fpn_1x_dota_le90.py
     roi_head=roi_head,

@@ -19,7 +19,7 @@ angle_version = 'le90'
 # 类别数
 nc = 16
 # 伪标签筛选超参
-semi_loss = dict(type='RotatedDTBLGIHeadLoss', cls_channels=nc, loss_type='origin', bbox_loss_type='l1', 
+semi_loss = dict(type='RotatedSparseDTBLLoss', cls_channels=nc, loss_type='origin', bbox_loss_type='l1', 
                  # 'topk', 'top_dps', 'catwise_top_dps', 'global_w', 'sla'
                  p_selection = dict(mode='global_w', k=0.01, beta=-1.), # 当mode=='top_dps'时, beta为S_pds的权重系数
                  )
@@ -27,9 +27,9 @@ semi_loss = dict(type='RotatedDTBLGIHeadLoss', cls_channels=nc, loss_type='origi
 # 无监督分支权重
 unsup_loss_weight = 1.0
 # 是否使用高斯椭圆标签分配 (注意GA分配得搭配QualityFocalLoss)
-bbox_head_type = 'SemiRotatedBLFCOSGAHead'
-loss_cls=dict(type='QualityFocalLoss', use_sigmoid=True, beta=2.0, loss_weight=1.0, activated=True)
-# bbox_head_type = 'SemiRotatedBLFCOSHead'
+bbox_head_type = 'SparseRotatedBLFCOSGAHead'
+loss_cls=dict(type='QualityFocalLoss', use_sigmoid=True, beta=2.0, loss_weight=1.0, activated=True, reduction='none')
+# bbox_head_type = 'SparseRotatedBLFCOSHead'
 # loss_cls=dict(type='FocalLoss', use_sigmoid=True, gamma=2.0, alpha=0.25, loss_weight=1.0)
 
 
@@ -102,7 +102,7 @@ load_from = None
 
 # model settings
 detector = dict(
-    type='SemiRotatedBLRefineFCOS',
+    type='SparseRotatedBLRefineFCOS',
     backbone=dict(
         type='ResNet',
         depth=50,
@@ -138,9 +138,9 @@ detector = dict(
         bbox_coder=dict(
             type='DistanceAnglePointCoder', angle_version=angle_version),
         loss_cls=loss_cls,
-        loss_bbox=dict(type='RotatedIoULoss', loss_weight=1.0),
+        loss_bbox=dict(type='RotatedIoULoss', loss_weight=1.0, reduction='none'),
         loss_centerness=dict(
-            type='CrossEntropyLoss', use_sigmoid=True, loss_weight=1.0)),
+            type='CrossEntropyLoss', use_sigmoid=True, loss_weight=1.0, reduction='none')),
     # 这部分充当去噪微调模块:
     # (roi_head, train_cfg, test_cfg): reference: /data/yht/code/sood-mcl/mmrotate-0.3.4/configs/oriented_rcnn/oriented_rcnn_r50_fpn_1x_dota_le90.py
     roi_head=roi_head,

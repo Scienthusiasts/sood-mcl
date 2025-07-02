@@ -80,8 +80,8 @@ roi_head=dict(
 
 burn_in_steps = 64
 # 是否导入权重
-load_from = '/data/yht/code/sood-mcl/log/new/globalw/ss_gihead/burn-in-6400_top0.03_O2M-only-boxloss_refine-allloss_sharefcheadroi_addnoise-p0.5_joint-jsdloss-dim0-w0.1_roiuloss-w0.1_ga_pe/latest.pth'
-# load_from = None
+# load_from = '/data/yht/code/sood-mcl/log/new/globalw/ss_gihead/burn-in-6400_top0.03_O2M-only-boxloss_refine-allloss_sharefcheadroi_addnoise-p0.5_joint-jsdloss-dim0-w0.1_roiuloss-w0.1_ga_pe/latest.pth'
+load_from = None
 
 
 
