@@ -117,6 +117,7 @@ def vis_sup_bboxes_batch(model, format_data, bs, nc, cls_scores, sup_fpn_feat, r
     # 图像和图像名
     img_names = [img_meta['ori_filename'] for img_meta in format_data['img_metas']]
     images = format_data['img']
+    gt_bboxes = format_data['unsup_strong']['gt_bboxes']
     '''nms + 分组(目前只回传nms的结果)'''
     # NOTE:注意这里传参共享内存, 所以得.clone()
     batch_nms_bboxes, batch_nms_labels = batch_nms(rbb_preds.clone(), cls_scores.reshape(bs, -1, nc))
@@ -131,6 +132,7 @@ def vis_sup_bboxes_batch(model, format_data, bs, nc, cls_scores, sup_fpn_feat, r
         img = (img * 255.).astype(np.uint8)
         img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
         # 5参转8参
+        poly_gt_rbb = obb2poly(gt_bboxes[batch])
         poly_rbb = obb2poly(proposal_list[batch])
         poly_refine_rbb = obb2poly(torch.tensor(refine_box_list[batch]))
         poly_nms_rbb = obb2poly(batch_nms_bboxes[batch])
@@ -138,11 +140,11 @@ def vis_sup_bboxes_batch(model, format_data, bs, nc, cls_scores, sup_fpn_feat, r
         # 可视化proposals框
         # img = OpenCVDrawBox(img, poly_rbb.cpu().numpy(), (0,0,255), 1)
         # 可视化nms保留框
-        img = OpenCVDrawBox(img, poly_nms_rbb.cpu().numpy(), (0,0,255), 2)
+        # img = OpenCVDrawBox(img, poly_nms_rbb.cpu().numpy(), (0,0,255), 2)
         # 可视化refine proposals框
-        img = OpenCVDrawBox(img, poly_refine_rbb.numpy(), (0,255,0), 2)
+        img = OpenCVDrawBox(img, poly_refine_rbb.numpy(), (0,0,255), 2)
         # 可视化GT框
-        # img = OpenCVDrawBox(img, poly_gt.cpu().numpy(), (0,255,0), 2)
+        img = OpenCVDrawBox(img, poly_gt_rbb.cpu().numpy(), (0,255,0), 2)
         # 保存结果
         if not os.path.exists(root_dir):os.makedirs(root_dir)
         img_save_path = f"{root_dir}/{img_name}"

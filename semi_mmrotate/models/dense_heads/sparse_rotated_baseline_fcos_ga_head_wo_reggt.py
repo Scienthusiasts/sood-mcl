@@ -17,7 +17,7 @@ from custom.fn_mining import FNMining
 INF = 1e8
 
 @ROTATED_HEADS.register_module()
-class SparseRotatedBLFCOSGAHead(SparseRotatedBLFCOSHead):
+class SparseRotatedBLFCOSGAHeadWORegGT(SparseRotatedBLFCOSHead):
 
 
 
@@ -44,9 +44,7 @@ class SparseRotatedBLFCOSGAHead(SparseRotatedBLFCOSHead):
             dtype=bbox_preds[0].dtype,
             device=bbox_preds[0].device
         )
-        labels, bbox_targets, angle_targets, centerness_targets, \
-        reg_labels, reg_bbox_targets, reg_angle_targets, reg_centerness_targets, \
-        sample_reg_pos_weights, sample_pos_weights, sample_all_weights = \
+        labels, bbox_targets, angle_targets, centerness_targets, sample_pos_weights, sample_all_weights = \
             self.get_targets(all_level_points, gt_bboxes, gt_labels)
 
         num_imgs = cls_scores[0].size(0)
@@ -75,16 +73,10 @@ class SparseRotatedBLFCOSGAHead(SparseRotatedBLFCOSHead):
         flatten_bbox_targets = torch.cat(bbox_targets)
         flatten_angle_targets = torch.cat(angle_targets)
         flatten_centerness_targets = torch.cat(centerness_targets)
-        # 回归正样本
-        flatten_reg_labels = torch.cat(reg_labels)
-        flatten_reg_bbox_targets = torch.cat(reg_bbox_targets)
-        flatten_reg_angle_targets = torch.cat(reg_angle_targets)
-        flatten_reg_centerness_targets = torch.cat(reg_centerness_targets)
 
         # repeat points to align with bbox_preds
         flatten_points = torch.cat([points.repeat(num_imgs, 1) for points in all_level_points])
         # 挖掘样本权重
-        flatten_sample_reg_pos_weights = torch.cat(sample_reg_pos_weights)
         flatten_sample_pos_weights = torch.cat(sample_pos_weights)
         flatten_sample_all_weights = torch.cat(sample_all_weights)
 
@@ -95,20 +87,14 @@ class SparseRotatedBLFCOSGAHead(SparseRotatedBLFCOSHead):
         pos_inds = ((flatten_labels >= 0) & (flatten_labels < bg_class_ind)).nonzero().reshape(-1)
         num_pos = torch.tensor(len(pos_inds), dtype=torch.float, device=bbox_preds[0].device)
         num_pos = max(reduce_mean(num_pos), 1.0)
-        # 回归正样本
-        reg_pos_inds = ((flatten_reg_labels >= 0) & (flatten_reg_labels < bg_class_ind)).nonzero().reshape(-1)
-        reg_num_pos = torch.tensor(len(reg_pos_inds), dtype=torch.float, device=bbox_preds[0].device)
-        reg_num_pos = max(reduce_mean(reg_num_pos), 1.0)
 
-        pos_bbox_preds = flatten_bbox_preds[reg_pos_inds]
-        pos_angle_preds = flatten_angle_preds[reg_pos_inds]
+        pos_bbox_preds = flatten_bbox_preds[pos_inds]
+        pos_angle_preds = flatten_angle_preds[pos_inds]
         pos_centerness = flatten_centerness[pos_inds]
-        pos_bbox_targets = flatten_reg_bbox_targets[reg_pos_inds]
-        pos_angle_targets = flatten_reg_angle_targets[reg_pos_inds]
+        pos_bbox_targets = flatten_bbox_targets[pos_inds]
+        pos_angle_targets = flatten_angle_targets[pos_inds]
         pos_fn_weight_masks = flatten_sample_pos_weights[pos_inds]
-        reg_pos_fn_weight_masks = flatten_sample_reg_pos_weights[reg_pos_inds]
         # print(f" | {pos_fn_weight_masks.min()}, {pos_fn_weight_masks.max()}, {pos_fn_weight_masks.mean()} | ")
-        # print(f" \ {reg_pos_fn_weight_masks.min()}, {reg_pos_fn_weight_masks.max()}, {reg_pos_fn_weight_masks.mean()} \ ")
         # NOTE: 使用dist.all_reduce同步操作, 当某张卡上不存在正样本时，所有卡都采用无正样本的loss计算方式
         # has_pos 判断当前gpu上是否有正样本
         has_pos = torch.tensor(len(pos_inds)>0, dtype=torch.int32, device=pos_bbox_preds.device)
@@ -117,7 +103,7 @@ class SparseRotatedBLFCOSGAHead(SparseRotatedBLFCOSHead):
         dist.all_reduce(has_pos, op=dist.ReduceOp.SUM)
 
         if has_pos == dist.get_world_size():
-            pos_points = flatten_points[reg_pos_inds]
+            pos_points = flatten_points[pos_inds]
             if self.separate_angle:
                 bbox_coder = self.h_bbox_coder
             else:
@@ -140,15 +126,13 @@ class SparseRotatedBLFCOSGAHead(SparseRotatedBLFCOSHead):
             centerness_denorm = max(reduce_mean(pos_centerness_targets.sum().detach()), 1e-6)
 
             # 回归损失
-            reg_pos_centerness_targets = flatten_reg_centerness_targets[reg_pos_inds] * reg_pos_fn_weight_masks
-            reg_centerness_denorm = max(reduce_mean(reg_pos_centerness_targets.sum().detach()), 1e-6)
             loss_bbox = self.loss_bbox(
                 pos_decoded_bbox_preds,
                 pos_decoded_target_preds,
-                weight=reg_pos_centerness_targets,
-                avg_factor=reg_centerness_denorm)
-            if use_fn_weight: loss_bbox *= reg_pos_fn_weight_masks
-            loss_bbox = loss_bbox.sum() / reg_centerness_denorm
+                weight=pos_centerness_targets,
+                avg_factor=centerness_denorm)
+            if use_fn_weight: loss_bbox *= pos_fn_weight_masks
+            loss_bbox = loss_bbox.sum() / centerness_denorm
 
 
             if self.separate_angle:
@@ -209,9 +193,7 @@ class SparseRotatedBLFCOSGAHead(SparseRotatedBLFCOSHead):
         num_points = [center.size(0) for center in points]
 
         # 补充: fn_weight_mask_list
-        labels_list, bbox_targets_list, angle_targets_list, centerness_targets_list, \
-        reg_labels_list, reg_bbox_targets_list, reg_angle_targets_list, reg_centerness_targets_list, \
-        sample_reg_pos_weight_list, sample_pos_weight_list, sample_all_weight_list = \
+        labels_list, bbox_targets_list, angle_targets_list, centerness_targets_list, sample_pos_weight_list, sample_all_weight_list = \
             multi_apply(
                 self._get_target_single,
                 gt_bboxes_list,
@@ -226,13 +208,7 @@ class SparseRotatedBLFCOSGAHead(SparseRotatedBLFCOSHead):
         bbox_targets_list = [bbox_targets.split(num_points, 0)for bbox_targets in bbox_targets_list]
         angle_targets_list = [angle_targets.split(num_points, 0)for angle_targets in angle_targets_list]
         centerness_targets_list = [centerness_targets.split(num_points, 0) for centerness_targets in centerness_targets_list]
-        # 回归正样本
-        reg_labels_list = [labels.split(num_points, 0) for labels in reg_labels_list]
-        reg_bbox_targets_list = [bbox_targets.split(num_points, 0)for bbox_targets in reg_bbox_targets_list]
-        reg_angle_targets_list = [angle_targets.split(num_points, 0)for angle_targets in reg_angle_targets_list]
-        reg_centerness_targets_list = [centerness_targets.split(num_points, 0) for centerness_targets in reg_centerness_targets_list]
         # 加权挖掘样本
-        sample_reg_pos_weight_list = [sample_reg_pos_weight.split(num_points, 0) for sample_reg_pos_weight in sample_reg_pos_weight_list]
         sample_pos_weight_list = [sample_pos_weight.split(num_points, 0) for sample_pos_weight in sample_pos_weight_list]
         sample_all_weight_list = [sample_all_weight.split(num_points, 0) for sample_all_weight in sample_all_weight_list]
 
@@ -241,13 +217,7 @@ class SparseRotatedBLFCOSGAHead(SparseRotatedBLFCOSHead):
         concat_lvl_bbox_targets = []
         concat_lvl_angle_targets = []
         concat_lvl_centerness_targets = []
-        # 回归正样本
-        concat_lvl_reg_labels = []
-        concat_lvl_reg_bbox_targets = []
-        concat_lvl_reg_angle_targets = []
-        concat_lvl_reg_centerness_targets = []
         # 加权挖掘样本
-        concat_lvl_sample_reg_pos_weights = []
         concat_lvl_sample_pos_weights = []
         concat_lvl_sample_all_weights = []
         for i in range(num_levels):
@@ -259,18 +229,7 @@ class SparseRotatedBLFCOSGAHead(SparseRotatedBLFCOSHead):
                 [angle_targets[i] for angle_targets in angle_targets_list])
             centerness_targets = torch.cat(
                 [centerness_targets[i] for centerness_targets in centerness_targets_list])
-            # 回归正样本
-            concat_lvl_reg_labels.append(
-                torch.cat([labels[i] for labels in reg_labels_list]))
-            reg_bbox_targets = torch.cat(
-                [bbox_targets[i] for bbox_targets in reg_bbox_targets_list])
-            reg_angle_targets = torch.cat(
-                [angle_targets[i] for angle_targets in reg_angle_targets_list])
-            reg_centerness_targets = torch.cat(
-                [centerness_targets[i] for centerness_targets in reg_centerness_targets_list])
             # 加权挖掘样本
-            sample_reg_pos_weights = torch.cat(
-                [sample_reg_pos_weight[i] for sample_reg_pos_weight in sample_reg_pos_weight_list])
             sample_pos_weights = torch.cat(
                 [sample_pos_weight[i] for sample_pos_weight in sample_pos_weight_list])
             sample_all_weights = torch.cat(
@@ -281,20 +240,12 @@ class SparseRotatedBLFCOSGAHead(SparseRotatedBLFCOSHead):
             concat_lvl_bbox_targets.append(bbox_targets)
             concat_lvl_angle_targets.append(angle_targets)
             concat_lvl_centerness_targets.append(centerness_targets)
-            # 回归正样本
-            if self.norm_on_bbox:
-                reg_bbox_targets = reg_bbox_targets / self.strides[i]
-            concat_lvl_reg_bbox_targets.append(reg_bbox_targets)
-            concat_lvl_reg_angle_targets.append(reg_angle_targets)
-            concat_lvl_reg_centerness_targets.append(reg_centerness_targets)
             # 加权挖掘样本
-            concat_lvl_sample_reg_pos_weights.append(sample_reg_pos_weights)
             concat_lvl_sample_pos_weights.append(sample_pos_weights)
             concat_lvl_sample_all_weights.append(sample_all_weights)
 
         return (concat_lvl_labels, concat_lvl_bbox_targets, concat_lvl_angle_targets, concat_lvl_centerness_targets, \
-                concat_lvl_reg_labels, concat_lvl_reg_bbox_targets, concat_lvl_reg_angle_targets, concat_lvl_reg_centerness_targets, \
-                concat_lvl_sample_reg_pos_weights, concat_lvl_sample_pos_weights, concat_lvl_sample_all_weights)
+                concat_lvl_sample_pos_weights, concat_lvl_sample_all_weights)
 
 
 
@@ -318,8 +269,6 @@ class SparseRotatedBLFCOSGAHead(SparseRotatedBLFCOSHead):
         sgt_bboxes = gt_bboxes
         sgt_labels = gt_labels
         pos_thres = 1.0 
-        reg_pos_thres = 0.9
-        reg_pos_beta = 5.0
         pos_beta = 5.0
         neg_beta = 5.0
         fn_mining_flag = gt_bboxes.shape[1]==6
@@ -332,34 +281,21 @@ class SparseRotatedBLFCOSGAHead(SparseRotatedBLFCOSHead):
             # 但是这些样本在计算损失时都会加权
             sgt_bboxes = gt_bboxes[gt_scores>=pos_thres]
             sgt_labels = gt_labels[gt_scores>=pos_thres]
-            reggt_bboxes = gt_bboxes[gt_scores>=reg_pos_thres]
-            reggt_labels = gt_labels[gt_scores>=reg_pos_thres]
             fn_bboxes = gt_bboxes[gt_scores<1.0]
-            fn_labels = gt_labels[gt_scores<1.0]
             fn_scores = gt_scores[gt_scores<1.0]
 
 
 
         # 这里得到的targets只包含阈值不小于pos_thres的样本
         cls_targets, bbox_targets, angle_targets, centerness_targets = self.gen_target_feat_single(sgt_bboxes, sgt_labels, points, regress_ranges)
-        if fn_mining_flag and reg_pos_thres<1.0:
-            # 这里得到的targets只包含阈值不小于reg_pos_thres的样本
-            reg_cls_targets, reg_bbox_targets, reg_angle_targets, reg_centerness_targets = self.gen_target_feat_single(reggt_bboxes, reggt_labels, points, regress_ranges)
-        else:
-            reg_cls_targets, reg_bbox_targets, reg_angle_targets, reg_centerness_targets = cls_targets.clone(), bbox_targets.clone(), angle_targets.clone(), centerness_targets.clone()
-
         if fn_num > 0:
             # 这里得到的targets只包含挖掘出的样本, 不包含sgt
             fn_target = FNMining.gen_fn_target_feat_single(fn_bboxes, points)
-            # TODO:0708
-            # fn_target = FNMining.gen_fn_target_feat_single(fn_bboxes, fn_labels, points, regress_ranges)
             # 将target转为mask, 用于后续对损失加权(减少哪些挖掘出的正样本对损失的贡献)
             # 这里会进一步根据pos_thres将挖掘出的样本再划分为正样本和负样本
-            sample_reg_pos_weight, sample_pos_weight, sample_all_weight = \
-                FNMining.get_sample_weight_overlap(fn_target, fn_scores, pos_thres, reg_pos_thres, reg_pos_beta, pos_beta, neg_beta)
+            sample_pos_weight, sample_all_weight = FNMining.get_sample_weight(fn_target, fn_scores, pos_thres, pos_beta, neg_beta)
         else:
-            sample_reg_pos_weight, sample_pos_weight, sample_all_weight = \
-                torch.ones_like(centerness_targets), torch.ones_like(centerness_targets), torch.ones_like(centerness_targets),
+            sample_pos_weight, sample_all_weight = torch.ones_like(centerness_targets), torch.ones_like(centerness_targets)
             
 
         '''可视化'''
@@ -381,9 +317,8 @@ class SparseRotatedBLFCOSGAHead(SparseRotatedBLFCOSHead):
         #     visualize_all_layers(feature_data, save_dir='./vis_combined')
 
 
-        #        [21824]     [21824, 4]    [21824, 1]         [21824]             [21824]         [21824, 4]        [21824, 1]            [21824]   
-        return cls_targets, bbox_targets, angle_targets, centerness_targets, reg_cls_targets, reg_bbox_targets, reg_angle_targets, reg_centerness_targets, \
-            sample_reg_pos_weight, sample_pos_weight, sample_all_weight  # [21824] 
+        #        [21824]     [21824, 4]    [21824, 1]         [21824]             [21824]            [21824] 
+        return cls_targets, bbox_targets, angle_targets, centerness_targets, sample_pos_weight, sample_all_weight  
 
 
 

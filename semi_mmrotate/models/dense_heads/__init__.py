@@ -8,3 +8,4 @@ from .semi_rotated_baseline_fcos_ga_head import SemiRotatedBLFCOSGAHead
 
 from .sparse_rotated_baseline_fcos_head import SparseRotatedBLFCOSHead
 from .sparse_rotated_baseline_fcos_ga_head import SparseRotatedBLFCOSGAHead
+from .sparse_rotated_baseline_fcos_ga_head_wo_reggt import SparseRotatedBLFCOSGAHeadWORegGT

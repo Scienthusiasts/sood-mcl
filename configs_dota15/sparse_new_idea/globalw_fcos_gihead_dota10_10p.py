@@ -47,48 +47,43 @@ loss_cls=dict(type='QualityFocalLoss', use_sigmoid=True, beta=2.0, loss_weight=1
 #     box_loss_w=0.1
 # )
 
-# # 是否开启refine head
-# use_refine_head=True
-# roi_head=dict(
-#     type='GIRoIHead', # ORCNNRoIHead GIRoIHead
-#     bbox_roi_extractor=dict(
-#         type='RotatedSingleRoIExtractor',
-#         roi_layer=dict(
-#             type='RoIAlignRotated',
-#             out_size=7,
-#             sample_num=2,
-#             clockwise=True),
-#         out_channels=256,
-#         featmap_strides=[8, 16, 32, 64, 128]),
-#     bbox_coder=dict(
-#         type='DeltaXYWHAOBBoxCoder',
-#         angle_range=angle_version,
-#         norm_factor=None,
-#         edge_swap=True,
-#         proj_xy=True,
-#         target_means=(.0, .0, .0, .0, .0),
-#         target_stds=(0.1, 0.1, 0.2, 0.2, 0.1)),
-#     nc=nc,
-#     add_noise_p=0,
-#     # 'share_head' 'avg_pool' 'share_fchead'
-#     roi_pooling = 'share_fchead', 
-#     assigner='HungarianWithIoUMatching',
-# )
-
-
-
 
 # 是否开启选择一致性自监督分支
 use_ss_branch=False
 ss_branch=None
 
 # 是否开启refine head
-use_refine_head=False
-roi_head=None
+use_refine_head=True
+roi_head=dict(
+    type='GIRoIHead', # ORCNNRoIHead GIRoIHead
+    bbox_roi_extractor=dict(
+        type='RotatedSingleRoIExtractor',
+        roi_layer=dict(
+            type='RoIAlignRotated',
+            out_size=7,
+            sample_num=2,
+            clockwise=True),
+        out_channels=256,
+        featmap_strides=[8, 16, 32, 64, 128]),
+    bbox_coder=dict(
+        type='DeltaXYWHAOBBoxCoder',
+        angle_range=angle_version,
+        norm_factor=None,
+        edge_swap=True,
+        proj_xy=True,
+        target_means=(.0, .0, .0, .0, .0),
+        target_stds=(0.1, 0.1, 0.2, 0.2, 0.1)),
+    nc=nc,
+    add_noise_p=0,
+    # 'share_head' 'avg_pool' 'share_fchead'
+    roi_pooling = 'share_fchead', 
+    assigner='HungarianWithIoUMatching',
+)
+
 
 burn_in_steps = 12800
 # 是否导入权重
-# load_from = 'log/new_sparse/1.0/globalw_burn-in-12800_ga_sfpm-thres0.1-fn-allweight-thres1.0-beta5.0_10per/latest.pth'
+# load_from = 'log/sparse_fnmining_gihead/1.0/burn-in-12800_ga_sfpm-thres0.1-fn-allweight-thres1.0-beta5.0_gihead-posthr0.7-noclsloss_reggt-thr0.9_10per/latest.pth'
 load_from = None
 
 
@@ -206,7 +201,7 @@ detector = dict(
 )
 
 model = dict(
-    type="RotatedDTBaselineGISSOnlySparse",
+    type="RotatedSparseGI",
     model=detector,
     nc=nc,
     # 核心部分:

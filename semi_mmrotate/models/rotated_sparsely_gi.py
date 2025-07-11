@@ -27,9 +27,9 @@ from mmcv.ops import diff_iou_rotated_2d
 
 @ROTATED_DETECTORS.register_module()
 # GI的意思是group interactive, 即将之前的二阶段orcnn-roihead换成group proposals之间存在交互的roihead
-class RotatedDTBaselineGISSOnlySparse(RotatedSemiDetector):
+class RotatedSparseGI(RotatedSemiDetector):
     def __init__(self, nc, use_ss_branch, ss_branch:dict, use_refine_head, model: dict, semi_loss, train_cfg=None, test_cfg=None, symmetry_aware=False, pretrained=None):
-        super(RotatedDTBaselineGISSOnlySparse, self).__init__(
+        super(RotatedSparseGI, self).__init__(
             dict(teacher=build_detector(model), student=build_detector(model)),
             semi_loss,
             train_cfg=train_cfg,
@@ -66,7 +66,7 @@ class RotatedDTBaselineGISSOnlySparse(RotatedSemiDetector):
 
 
     def forward_train(self, imgs, img_metas, **kwargs):
-        super(RotatedDTBaselineGISSOnlySparse, self).forward_train(imgs, img_metas, **kwargs)
+        super(RotatedSparseGI, self).forward_train(imgs, img_metas, **kwargs)
         losses = dict()
 
         '''数据读取'''
@@ -75,34 +75,27 @@ class RotatedDTBaselineGISSOnlySparse(RotatedSemiDetector):
         # 可视化稀疏数据和标签(通常注释)
         # vis_sparse_data(format_data, save_dir='./vis_strong_weak_img')
 
+
+
+
+
+
         '''对无监督分支的图像进行旋转增强处理(旋转一致性自监督学习)'''
         if self.use_ss_branch:
             # format_data参数共享内存, 不返回也会同步修改
             format_data, rand_angle, isflip = self.SSBranch.gen_aug_data(format_data, aug_orders)
 
 
-        '''稀疏监督分支(burn-in阶段)'''
-        if self.iter_count <= self.burn_in_steps:
-
-            # student部分前向+计算损失
-            # NOTE:这里会和稀疏GT也计算损失, 返回s_losses
-            s_feat_losses = self.student.forward_train(return_fpn_feat=False, get_data=False, **format_data[aug_orders[0]])
-            s_losses, _,_,_,_,_ = s_feat_losses
-
-
-            
 
 
 
-
-
-        '''burn-in结束, 开始t-s自标注+自蒸馏训练'''
+        '''burn-in结束, 开启正样本挖掘'''
         if self.iter_count > self.burn_in_steps:
 
-            # burn_in之后的慢启动, 慢慢增加无监督分支损失的权重
+            # burn_in之后的慢启动, 慢慢增加无监督分支损失的权重(只有使用t-s自蒸馏分支才用到)
             unsup_weight = self.ema_weight()
 
-            '''得到teacher预测结果'''
+            '''得到teacher预测结果+正样本挖掘'''
             with torch.no_grad():
                 # NOTE:yan, 这里额外回传类别GT, 正样本索引, fpn的多尺度特征
                 t_feat_losses, t_fpn_feat = self.teacher.forward_train(return_fpn_feat=True, get_data=False, **format_data[aug_orders[1]])
@@ -121,70 +114,56 @@ class RotatedDTBaselineGISSOnlySparse(RotatedSemiDetector):
                 batch_t_flat_labels, batch_t_flat_cnt_preds, batch_t_flat_cls_preds, batch_t_flat_rbbox_preds = \
                     t_flat_label_preds.reshape(bs, -1, 1), t_flat_cnt_logits.reshape(bs, -1, 1), \
                     t_flat_cls_logits.reshape(bs, -1, self.nc), t_flat_rbbox_preds.reshape(bs, -1, 5)
-                # 对teacher的batch dense预测进行解码+nms转化为pgt
-                batch_t_nms_bboxes, batch_t_nms_scores, batch_t_nms_labels, batch_t_all_results = \
-                    self.batch_decode_and_nms(bs, batch_t_flat_rbbox_preds.clone(), batch_t_flat_cls_preds.sigmoid(), batch_t_flat_cnt_preds.sigmoid(), nms_score_thres=0.1)
+
+
+
+                if self.use_refine_head:
+                    '''用gihead挖掘出正样本'''
+                    batch_t_flat_cls_scores, _ = torch.max(batch_t_flat_cls_preds, dim=-1, keepdim=True)
+                    batch_t_flat_joint_score = batch_t_flat_cls_scores.sigmoid() * batch_t_flat_cnt_preds.sigmoid()
+                    # 把所有信息concat在一起 [bs, total_anchor_num, 7=(cx, cy, w, h, θ, score, label)]
+                    t_rbb_preds = torch.cat([batch_t_flat_rbbox_preds, batch_t_flat_joint_score, batch_t_flat_labels], dim=-1)
+                    '''预测结果经过teacher roihead的微调'''
+                    with torch.no_grad():
+                        # 对原始预测解码
+                        # 这里rbb_preds不加.detach() 会报inplace op的错
+                        t_rbb_preds = self.rbb_decode(bs, t_fpn_feat, t_rbb_preds)
+                        batch_preds = self.teacher.roi_head.infer(
+                            t_fpn_feat, 
+                            t_rbb_preds, batch_t_flat_cls_preds.sigmoid(), batch_t_flat_cnt_preds.squeeze(-1).sigmoid(),
+                            format_data[aug_orders[0]],
+                            )
+                        batch_t_nms_bboxes, batch_t_nms_scores, batch_t_nms_labels = [], [], []
+                        for preds in batch_preds:
+                            # preds = [nms_boxes_num, 7=(cx, cy, w, h, θ, score, label)]
+                            batch_t_nms_bboxes.append(preds[:, :6])
+                            batch_t_nms_scores.append(preds[:, 5])
+                            batch_t_nms_labels.append(preds[:, 6].to(torch.long))
+                else:
+                    '''用原始的dense bboxes挖掘出正样本'''
+                    # 对teacher的batch dense预测进行解码+nms转化为pgt
+                    # batch_t_nms_bboxes = list([box_num, 6], ..., [...])  batch_t_nms_scores = list([box_num, 15], ..., [...])
+                    batch_t_nms_bboxes, batch_t_nms_scores, batch_t_nms_labels, batch_t_all_results = \
+                        self.batch_decode_and_nms(bs, batch_t_flat_rbbox_preds.clone(), batch_t_flat_cls_preds.sigmoid(), batch_t_flat_cnt_preds.sigmoid(), nms_score_thres=0.1)
+                    # list([box_num, 15], ..., [...]) -> list([box_num], ..., [...])
+                    batch_t_nms_scores = [torch.max(t_nms_scores, dim=-1)[0] for t_nms_scores in batch_t_nms_scores]
+
+
+
                 '''teacher正样本挖掘(sparse-level)'''
-                format_data = FNMining.fp_mining(bs, batch_t_nms_bboxes, batch_t_nms_scores, format_data, aug_orders)
-
-            '''student稀疏监督训练(sparse-level)'''
-            # student部分前向+计算损失
-            s_feat_losses, s_fpn_feat = self.student.forward_train(return_fpn_feat=True, get_data=False, **format_data[aug_orders[0]])
-            #              [bs*21824]        [bs*21824]     [bs*21824, self.nc]   [bs*21824, 4]      [bs*21824, 1]
-            s_losses, s_flat_label_preds, s_flat_cnt_logits, s_flat_cls_logits, s_flat_bbox_preds, s_flat_angle_preds = s_feat_losses
+                # 挖掘出的正样本会放入format_data中当做gt
+                format_data = FNMining.fp_mining(bs, batch_t_nms_bboxes, batch_t_nms_scores, batch_t_nms_labels, format_data, aug_orders)
 
 
-            # TODO: 旋转一致性自监督分支, 把图像和gt都旋转(额外产生旋转图像+旋转标签)
+        '''稀疏监督分支(before burn-in) / student稀疏监督训练(sparse-level) (after burn-in)'''
+        # student部分前向+计算损失
+        # NOTE:这里会和稀疏GT(挖掘出的正样本)也计算损失, 返回s_losses
+        s_feat_losses, s_fpn_feat = self.student.forward_train(return_fpn_feat=True, get_data=False, **format_data[aug_orders[0]])
+        #              [bs*21824]         [bs*21824]    [bs*21824, self.nc]    [bs*21824, 4]      [bs*21824, 1]
+        sparse_losses, s_flat_label_preds, s_flat_cnt_logits, s_flat_cls_logits, s_flat_bbox_preds, s_flat_angle_preds = s_feat_losses
 
-
-
-
-
-
-
-
-
-
-
-            '''student稀疏监督训练(dense-level), 基于半监督的t监督s'''
-            # # TODO: 要不要把sgt那部分mask掉, 只对其余部分自蒸馏?
-            # # 调整student feature拼接顺序
-            # s_flat_cls_logits = rearrange_order(bs, s_flat_cls_logits)
-            # s_flat_label_preds = rearrange_order(bs, s_flat_label_preds)
-            # s_flat_cnt_logits = rearrange_order(bs, s_flat_cnt_logits)
-            # s_flat_bbox_preds = rearrange_order(bs, s_flat_bbox_preds)
-            # s_flat_angle_preds = rearrange_order(bs, s_flat_angle_preds)
-            # s_flat_rbbox_preds = torch.cat([s_flat_bbox_preds, s_flat_angle_preds], dim=-1)
-
-            # # 给特征加上batch维度(dim=0) -> [bs, 21824, dim]
-            # batch_s_flat_labels, batch_s_flat_cnt_preds, batch_s_flat_cls_preds, batch_s_flat_rbbox_preds = \
-            #     s_flat_label_preds.reshape(bs, -1, 1), s_flat_cnt_logits.reshape(bs, -1, 1), \
-            #     s_flat_cls_logits.reshape(bs, -1, self.nc), s_flat_rbbox_preds.reshape(bs, -1, 5)
-            # # 对student的batch dense预测进行解码
-            # batch_s_all_results = \
-            #     self.batch_decode_and_nms(bs, batch_s_flat_rbbox_preds.clone(), batch_s_flat_cls_preds.sigmoid(), batch_s_flat_cnt_preds.sigmoid(), use_nms=False)
-            # # [bs*21824, 5]
-            # s_flat_rbbox_preds = batch_s_all_results[..., :5].reshape(-1, 5)
-            # t_flat_rbbox_preds = batch_t_all_results[..., :5].reshape(-1, 5)
-
-            # reshape_t_logits = [t_flat_cls_logits, t_flat_rbbox_preds, t_flat_cnt_logits]
-            # reshape_s_logits = [s_flat_cls_logits, s_flat_rbbox_preds, s_flat_cnt_logits]
-            # # teacher-student自蒸馏损失:
-            # unsup_losses, t_joint_scores = self.semi_loss(reshape_t_logits, reshape_s_logits)
-
-            # # 组织常规的无监督损失
-            # for key, val in unsup_losses.items():
-            #     if key[:4] == 'loss':
-            #         losses[f"{key}_unsup"] = unsup_weight * val
-            #     else:
-            #         losses[key] = val
-
-
-
-
-
-        # 组织常规稀疏监督损失
-        for key, val in s_losses.items():
+        # 组织稀疏监督损失
+        for key, val in sparse_losses.items():
             if key[:4] == 'loss':
                 if isinstance(val, list):
                     losses[f"{key}_sup"] = [self.sup_weight * x for x in val]
@@ -193,8 +172,73 @@ class RotatedDTBaselineGISSOnlySparse(RotatedSemiDetector):
             else:
                 losses[key] = val
 
+
+
+
+        '''训练gi-head分支'''
+        if self.use_refine_head:
+            bs = s_fpn_feat[0].shape[0]
+            # 调整拼接顺序
+            s_flat_cls_score = rearrange_order(bs, s_flat_cls_logits).sigmoid()
+            s_flat_cls_labels = torch.argmax(s_flat_cls_logits, dim=1, keepdim=True)
+            s_flat_centerness = rearrange_order(bs, s_flat_cnt_logits).sigmoid()
+            s_flat_bbox_preds = rearrange_order(bs, s_flat_bbox_preds)
+            s_flat_angle_preds = rearrange_order(bs, s_flat_angle_preds)
+            # 获得联合置信度
+            s_flat_joint_scores = torch.einsum('ij, i -> ij', s_flat_cls_score, s_flat_centerness).max(dim=-1)[0].unsqueeze(1)
+
+            # [bs, total_anchor_num, 7=(cx, cy, w, h, θ, joint_score, label)] 这里的 cx, cy, w, h, θ格式还不对, 还需要解码
+            s_rbb_preds = torch.cat([s_flat_bbox_preds, s_flat_angle_preds, s_flat_joint_scores, s_flat_cls_labels], dim=-1).reshape(bs, -1, 7)
+            # NOTE:Ablation1: 断开refine-head与主体检测器的梯度
+            # s_fpn_feat = [fpn_feat.detach() for fpn_feat in s_fpn_feat]
+            # NOTE:Ablation2: 不断开refine-head与主体检测器的梯度
+            s_fpn_feat = [fpn_feat for fpn_feat in s_fpn_feat]
+
+            # 1.对原始预测解码
+            # 这里rbb_preds不加.detach() 会报inplace op的错
+            s_rbb_preds = self.rbb_decode(bs, s_fpn_feat, s_rbb_preds.detach())
+
+            # 2.送入roi head进行微调
+            # 注意 roi_head.forward_train接受的回归框坐标的格式是[cx, cy, w, h, a]
+            # TODO: 这里用的是sgt+所有挖掘的正样本(目前阈值是0.1), 后续应该独立设置一个更高的阈值(比如0.7), 因为本质gihead是想对框的坐标进行微调, 
+            # 置信度太低的那些挖掘样本反而回归的不对或是负样本
+            s_roi_losses = self.student.roi_head.loss(
+                s_fpn_feat, 
+                s_rbb_preds, s_flat_cls_score.reshape(bs, -1, self.nc), s_flat_centerness.reshape(bs, -1), 
+                format_data[aug_orders[0]]['gt_bboxes'], format_data[aug_orders[0]]['gt_labels'], 
+                format_data[aug_orders[0]], 
+                train_mode='train_sup' 
+            )
+            
+            # 3.组织gihead微调模块的损失
+            for key, val in s_roi_losses.items():
+                if key[:4] == 'loss':
+                    losses[f"{key}_refine"] = self.sup_weight * val
+                else:
+                    losses[key] = val
+
+
+
+
         self.iter_count += 1
         return losses
+
+
+
+
+
+
+        # TODO: gihead
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -348,3 +392,28 @@ class RotatedDTBaselineGISSOnlySparse(RotatedSemiDetector):
             return t_all_results
     
 
+    def rbb_decode(self, bs, sup_fpn_feat, rbb_preds):
+        '''对网络得到的框的回归值解码(gi_head使用)
+        '''
+        # 0.对角度再乘一个可学习的尺度(这里不加with torch.no_grad()显存会持续增加直到OOM, 不知道为啥)
+        # NOTE: 这里似乎不需要了(加上之后可视化角度不对, 去掉后角度就正常了), 很奇怪:
+        # NOTE: 所以之前训练其实角度都是不太对的? TvT(25-1-15)
+        # with torch.no_grad():
+        #     rbb_preds[:, :, 4] = self.student.bbox_head.scale_angle(rbb_preds[:, :, 4])
+        # 1. 获得grid网格点坐标
+        all_level_points = self.prior_generator.grid_priors(
+            [featmap.size()[-2:] for featmap in sup_fpn_feat],
+            dtype=rbb_preds.dtype,
+            device=rbb_preds.device
+            )
+        # [[h1*w1, 2], ..., [h5*w5, 2]] -> [total_anchor_num, 2]
+        concat_points = torch.cat(all_level_points, dim=0)
+        # 2. 对bbox的乘上对应的尺度
+        lvl_range  = [0, 16384, 20480, 21504, 21760, 21824]
+        lvl_stride = [8, 16, 32, 64, 128]
+        for i in range(bs):
+            for lvl in range(5):
+                rbb_preds[i, lvl_range[lvl]:lvl_range[lvl+1], :4] *= lvl_stride[lvl]
+            # 3. 对预测的bbox解码得到最终的结果, 并得到联合置信度作为类别置信度
+            rbb_preds[i, :, :5] = self.bbox_coder.decode(concat_points, rbb_preds[i, :, :5])
+        return rbb_preds

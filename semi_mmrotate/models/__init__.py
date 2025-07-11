@@ -19,5 +19,7 @@ from .rotated_dense_teacher_ss import RotatedDenseTeacherSS
 from .mcl_ss import MCLTeacherSS
 # yan sparsely
 from .rotated_dt_baseline_ss_gi_head_sparsely import RotatedDTBaselineGISSSparse
-# 只保留强弱增强数据, 并去除有监督分支, 去除burn-in
-from .rotated_dt_baseline_ss_gi_head_sparsely_wosupbranch import RotatedDTBaselineGISSOnlySparse
+# 只保留强弱增强数据, 并去除有监督分支, 去除burn-in, 加上gihead
+from .rotated_sparsely_gi import RotatedSparseGI
+# 只保留强弱增强数据, 并去除有监督分支, 去除burn-in, 加上gihead, gihead只更新不利用其伪框
+from .rotated_sparsely_gi_wo_reggt import RotatedSparseGIWORegGT

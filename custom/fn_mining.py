@@ -18,70 +18,71 @@ class FNMining(nn.Module):
 
 
     @staticmethod
-    def fp_mining(bs, batch_t_nms_bboxes, batch_t_nms_scores, format_data, aug_orders):
+    def fp_mining(bs, batch_t_nms_bboxes, batch_t_nms_scores, batch_t_nms_labels, format_data, aug_orders):
         """teacher正样本挖掘(sparse-level)
         """
         # 1.挖掘正样本
-        batch_t_fn_bboxes, batch_t_fn_score = FNMining.batch_fn_mining_strategy(batch_t_nms_bboxes, batch_t_nms_scores, format_data)
+        batch_t_fn_bboxes, batch_t_fn_score, batch_fn_label = FNMining.batch_fn_mining_strategy(batch_t_nms_bboxes, batch_t_nms_scores, batch_t_nms_labels, format_data)
         # 2.将挖掘出的正样本作为gt加入format_data(student的输入)中
         for i in range(bs):
             # 没有挖掘出正样本则跳过
             if(batch_t_fn_bboxes[i].shape[0]==0): continue
             # 获取预测类别和对应的置信度
-            t_fn_score, t_fn_label = torch.max(batch_t_fn_score[i], dim=-1)
+            t_fn_score, t_fn_label = batch_t_fn_score[i], batch_fn_label[i]
             # 把每个gt的置信度也拼到GT bbox里去(原本gt的置信度为1, 挖掘出的正样本的置信度为其原本的置信度)
             gt_nums = format_data[aug_orders[0]]['gt_bboxes'][i].shape[0]
             scores = torch.ones(gt_nums, device=format_data[aug_orders[0]]['gt_bboxes'][i].device)
             scores = torch.cat([scores, t_fn_score]).unsqueeze(1)
-            # 把挖掘出的fp加入GT bbox里去
+            # 把挖掘出的fp加入GT bbox里去(注意这里只加载unsup_strong, 没加在unsup_weak)
             t_fn_bboxes = batch_t_fn_bboxes[i][:, :5]
             format_data[aug_orders[0]]['gt_bboxes'][i] = torch.cat([format_data[aug_orders[0]]['gt_bboxes'][i], t_fn_bboxes], dim=0)
             format_data[aug_orders[0]]['gt_labels'][i] = torch.cat([format_data[aug_orders[0]]['gt_labels'][i], t_fn_label], dim=0)
             # 把每个gt的置信度也拼到bbox里去 [sparse_gt+fp, 5] -> [sparse_gt+fp, 6]
             format_data[aug_orders[0]]['gt_bboxes'][i] = torch.cat([format_data[aug_orders[0]]['gt_bboxes'][i], scores], dim=-1)
         # 可视化稀疏标签+挖掘出的正样本(默认注释)
-        # vis_batch_gts(format_data, mode='unsup_strong', save_dir='./vis_t_sparse_label_w_mining')
+        # vis_batch_gts(format_data, mode='unsup_strong', save_dir='./vis_t_sgt+mininggt')
 
         return format_data
 
 
 
     @staticmethod
-    def batch_fn_mining_strategy(batch_nms_bboxes, batch_nms_scores, format_data, iou_thres=0.1):
+    def batch_fn_mining_strategy(batch_nms_bboxes, batch_nms_scores, batch_nms_labels, format_data, iou_thres=0.1):
         """batch正样本挖掘具体策略
         """
         mode = 'unsup_weak'
         batch_gt_bboxes = format_data[mode]['gt_bboxes']
         batch_gt_labels = format_data[mode]['gt_labels']
-        batch_fn_bboxes, batch_fn_score, batch_fn_iou = [], [], []
-        batch_tn_bboxes, batch_tn_score = [], []
+        batch_fn_bboxes, batch_fn_score, batch_fn_label, batch_fn_iou = [], [], [], []
+        batch_tn_bboxes, batch_tn_score, batch_tn_label = [], [], []
         # 每张图片分别挖掘
-        for nms_bboxes, nms_scores, gt_bboxes, gt_labels in zip(batch_nms_bboxes, batch_nms_scores, batch_gt_bboxes, batch_gt_labels):
-            max_nms_scores, max_nms_labels = torch.max(nms_scores, dim=-1)
+        for nms_bboxes, nms_scores, nms_labels, gt_bboxes, gt_labels in zip(batch_nms_bboxes, batch_nms_scores, batch_nms_labels, batch_gt_bboxes, batch_gt_labels):
             # 1.潜在正样本的类别必须在稀疏gt中出现
-            cat_mask = torch.isin(max_nms_labels, gt_labels)
+            cat_mask = torch.isin(nms_labels, gt_labels)
             # 2.潜在正样本和稀疏GT的IoU不能太大(太大说明和gt冗余)
             riou = box_iou_rotated(nms_bboxes[:, :-1], gt_bboxes)
             riou, _ = torch.max(riou, dim=-1)
             iou_mask = riou <= iou_thres
             # 3.潜在正样本的置信度必须在所有nms box平均置信度之上
-            # mean_nms_score = max_nms_scores[iou_mask].mean() if iou_mask.sum() > 0 else max_nms_scores.mean()
-            # score_mask = max_nms_scores >= mean_nms_score
-            score_mask = max_nms_scores >= 0.0
-            # print((max_nms_scores >= 0.6).sum())
+            # mean_nms_score = nms_scores[iou_mask].mean() if iou_mask.sum() > 0 else nms_scores.mean()
+            # score_mask = nms_scores >= mean_nms_score
+            score_mask = nms_scores >= 0.1
             # 满足1.2.3则成为潜在正样本
             pos_mask = cat_mask & score_mask & iou_mask
 
             batch_fn_bboxes.append(nms_bboxes[pos_mask])
             batch_fn_score.append(nms_scores[pos_mask])
+            batch_fn_label.append(nms_labels[pos_mask])
             batch_fn_iou.append(riou[pos_mask])
             batch_tn_bboxes.append(nms_bboxes[~pos_mask])
             batch_tn_score.append(nms_scores[~pos_mask])
+            batch_tn_label.append(nms_labels[pos_mask])
 
         # 可视化解码后的预测框(默认注释)
-        vis_batch_preds(format_data, batch_fn_bboxes, batch_fn_score, batch_fn_iou, batch_tn_bboxes, batch_tn_score, save_dir='./vis_t_nms_preds')
+        # vis_batch_preds(format_data, batch_fn_bboxes, batch_fn_score, batch_fn_label, batch_fn_iou, \
+        # batch_tn_bboxes, batch_tn_score, batch_tn_label, save_dir='./vis_t_gt_mining_normal')
 
-        return batch_fn_bboxes, batch_fn_score
+        return batch_fn_bboxes, batch_fn_score, batch_fn_label
 
 
 
@@ -112,22 +113,92 @@ class FNMining(nn.Module):
 
 
 
+    # @staticmethod
+    # def gen_fn_target_feat_single(gt_bboxes, gt_labels, points, regress_ranges):
+    #     """得到fcos正负样本分配后的gt特征图(仅对sparse gt)
+    #        修改了下高斯分配:之前没加FCOS的尺度半径限制，导致生成的weight_mask的高斯范围偏大
+    #     """
+    #     INF = 1e8
+    #     num_points = points.size(0)
+    #     num_gts = gt_labels.size(0)
+
+    #     areas = gt_bboxes[:, 2] * gt_bboxes[:, 3]
+    #     # TODO: figure out why these two are different
+    #     # areas = areas[None].expand(num_points, num_gts)
+    #     areas = areas[None].repeat(num_points, 1)
+    #     regress_ranges = regress_ranges[:, None, :].expand(
+    #         num_points, num_gts, 2)
+    #     points = points[:, None, :].expand(num_points, num_gts, 2)
+    #     gt_bboxes = gt_bboxes[None].expand(num_points, num_gts, 5)
+    #     gt_ctr, gt_wh, gt_angle = torch.split(gt_bboxes, [2, 2, 1], dim=2)
+
+    #     cos_angle, sin_angle = torch.cos(gt_angle), torch.sin(gt_angle)
+    #     rot_matrix = torch.cat([cos_angle, sin_angle, -sin_angle, cos_angle],
+    #                            dim=-1).reshape(num_points, num_gts, 2, 2)
+    #     offset = points - gt_ctr
+    #     offset = torch.matmul(rot_matrix, offset[..., None])
+    #     offset = offset.squeeze(-1)
+
+    #     w, h = gt_wh[..., 0], gt_wh[..., 1]
+    #     offset_x, offset_y = offset[..., 0], offset[..., 1]
+    #     left = w / 2 + offset_x
+    #     right = w / 2 - offset_x
+    #     top = h / 2 + offset_y
+    #     bottom = h / 2 - offset_y
+    #     bbox_targets = torch.stack((left, top, right, bottom), -1)
+
+    #     gaussian_center = offset_x.pow(2) / (w / 2).pow(2) + offset_y.pow(2) / (h / 2).pow(2)
+
+    #     # condition1: inside a gt bbox
+    #     inside_gt_bbox_mask = gaussian_center < 1
+    #     # condition2: limit the regression range for each location
+    #     max_regress_distance = bbox_targets.max(-1)[0]
+    #     inside_regress_range = (
+    #         (max_regress_distance >= regress_ranges[..., 0])
+    #         & (max_regress_distance <= regress_ranges[..., 1]))
+
+    #     # if there are still more than one objects for a location,
+    #     # we choose the one with minimal area
+    #     areas[inside_gt_bbox_mask == 0] = INF
+    #     areas[inside_regress_range == 0] = INF
+    #     min_area, min_area_inds = areas.min(dim=1)
+     
+    #     bbox_targets = bbox_targets[range(num_points), min_area_inds]
+    #     centerness_targets = 1 - gaussian_center[range(num_points), min_area_inds]
+    #     # 创建与原张量相同形状的全inf矩阵
+    #     result = torch.full_like(gaussian_center, INF)
+    #     result.scatter_(dim=1, index=min_area_inds.unsqueeze(1), src=gaussian_center.gather(dim=1, index=min_area_inds.unsqueeze(1)))
+
+    #     return result, centerness_targets
+
+
+
+
+
+
+
+
 
 
     @staticmethod
-    def get_sample_weight(gaussian_center, scores, pos_thres, beta=1.0):
+    def get_sample_weight(gaussian_center, scores, pos_thres, pos_beta, neg_beta):
         """对挖掘出的正样本生成weight_mask在计算损失时加权(单张图像), 在densehead部分使用
+            Args:
+
+            Returns:
+                pos_weight: 正样本的损失权重(中心度和回归损失使用)(和特征图尺寸大小一致)
+                all_weight: 所有样本的损失权重(仅分类损失使用)(和特征图尺寸大小一致)
         """
         pos_mask = scores >= pos_thres
         neg_mask = ~pos_mask
         # 计算挖掘样本中的正样本的权重mask
         if pos_mask.sum() > 0:
-            pos_weight = FNMining.get_sample_weight_by_mode(gaussian_center[:, pos_mask], scores[pos_mask], 'pos', beta=5.0)
+            pos_weight = FNMining.get_sample_weight_by_mode(gaussian_center[:, pos_mask], scores[pos_mask], 'pos', beta=pos_beta)
         else:
             pos_weight = torch.ones_like(gaussian_center[:, 0])
         # 计算挖掘样本中的负样本的权重mask
         if neg_mask.sum() > 0:
-            neg_weight = FNMining.get_sample_weight_by_mode(gaussian_center[:, neg_mask], scores[neg_mask], 'neg', beta=5.0)
+            neg_weight = FNMining.get_sample_weight_by_mode(gaussian_center[:, neg_mask], scores[neg_mask], 'neg', beta=neg_beta)
         else:
             neg_weight = torch.ones_like(gaussian_center[:, 0])
 
@@ -136,6 +207,48 @@ class FNMining(nn.Module):
         all_weight[pos_region] = pos_weight[pos_region]
 
         return pos_weight, all_weight
+
+
+
+
+    @staticmethod
+    def get_sample_weight_overlap(gaussian_center, scores, pos_thres, reg_pos_thres, reg_pos_beta, pos_beta, neg_beta):
+        """对挖掘出的正样本生成weight_mask在计算损失时加权(单张图像), 在densehead部分使用
+           和get_sample_weight方法不一样的地方在于, 这里多了一个reg_pos_thres阈值, reg_pos_thres通常小于pos_thres
+           也就是说, 置信度在(reg_pos_thres, pos_thres)之间的样本, 既会参与正样本回归损失, 又会参与负样本分类损失
+            Args:
+
+            Returns:
+                pos_weight: 正样本的损失权重(中心度和回归损失使用)(和特征图尺寸大小一致)
+                all_weight: 所有样本的损失权重(仅分类损失使用)(和特征图尺寸大小一致)
+        """
+        reg_pos_mask = scores >= reg_pos_thres
+        pos_mask = scores >= pos_thres
+        neg_mask = ~pos_mask
+        # 计算挖掘样本中的用于回归的正样本的权重mask
+        if reg_pos_mask.sum() > 0:
+            reg_pos_weight = FNMining.get_sample_weight_by_mode(gaussian_center[:, reg_pos_mask], scores[reg_pos_mask], 'pos', beta=reg_pos_beta)
+        else:
+            reg_pos_weight = torch.ones_like(gaussian_center[:, 0])        
+        # 计算挖掘样本中的正样本的权重mask
+        if pos_mask.sum() > 0:
+            pos_weight = FNMining.get_sample_weight_by_mode(gaussian_center[:, pos_mask], scores[pos_mask], 'pos', beta=pos_beta)
+        else:
+            pos_weight = torch.ones_like(gaussian_center[:, 0])
+        # 计算挖掘样本中的负样本的权重mask
+        if neg_mask.sum() > 0:
+            neg_weight = FNMining.get_sample_weight_by_mode(gaussian_center[:, neg_mask], scores[neg_mask], 'neg', beta=neg_beta)
+        else:
+            neg_weight = torch.ones_like(gaussian_center[:, 0])
+
+        all_weight = neg_weight
+        pos_region = pos_weight<1.0
+        all_weight[pos_region] = pos_weight[pos_region]
+
+
+        return reg_pos_weight, pos_weight, all_weight
+
+
 
 
     @staticmethod
@@ -234,7 +347,7 @@ def vis_sparse_data(format_data, save_dir='./vis_strong_weak_img'):
 
 
 
-def vis_batch_preds(format_data, batch_fn_bboxes, batch_fn_score, batch_fn_iou, batch_tn_bboxes, batch_tn_score, save_dir):
+def vis_batch_preds(format_data, batch_fn_bboxes, batch_fn_score, batch_fn_label, batch_fn_iou, batch_tn_bboxes, batch_tn_score, batch_tn_label, save_dir):
     '''可视化解码后的预测框(post nms) + 稀疏gt
     '''
     mode = 'unsup_weak'
@@ -244,8 +357,8 @@ def vis_batch_preds(format_data, batch_fn_bboxes, batch_fn_score, batch_fn_iou, 
     batch_gt_bboxes = format_data[mode]['gt_bboxes']
     batch_gt_labels = format_data[mode]['gt_labels']
     # 可视化每张图像预测结果
-    for img, img_meta, gt_bboxes, fn_bboxes, fn_scores, fn_iou, tn_bboxes, tn_scores in \
-        zip(batch_img, batch_img_meta, batch_gt_bboxes, batch_fn_bboxes, batch_fn_score, batch_fn_iou, batch_tn_bboxes, batch_tn_score):
+    for img, img_meta, gt_bboxes, fn_bboxes, fn_scores, fn_labels, fn_iou, tn_bboxes, tn_scores, tn_labels in \
+        zip(batch_img, batch_img_meta, batch_gt_bboxes, batch_fn_bboxes, batch_fn_score, batch_fn_label, batch_fn_iou, batch_tn_bboxes, batch_tn_score, batch_tn_label):
         # 原图预处理
         std = np.array([58.395, 57.12 , 57.375]) / 255.
         mean = np.array([123.675, 116.28 , 103.53]) / 255.
@@ -259,8 +372,6 @@ def vis_batch_preds(format_data, batch_fn_bboxes, batch_fn_score, batch_fn_iou, 
         poly_boxes_tn = obb2poly(tn_bboxes)
         poly_boxes_gt = obb2poly(gt_bboxes)
 
-        # 取置信度最大的那个类别的置信度作为该box的置信度
-        fn_scores, fn_labels = torch.max(fn_scores, dim=-1)
         # opencv绘制框
         if fn_bboxes.shape[0]>0:
             img = OpenCVDrawBox(img, poly_boxes_fn.cpu().numpy(), (0,255,255), 1)
