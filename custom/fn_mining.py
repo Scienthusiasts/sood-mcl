@@ -68,8 +68,8 @@ class FNMining(nn.Module):
             # score_mask = nms_scores >= mean_nms_score
             score_mask = nms_scores >= 0.1
             # 满足1.2.3则成为潜在正样本
-            pos_mask = cat_mask & score_mask & iou_mask
-
+            # pos_mask = cat_mask & score_mask & iou_mask
+            pos_mask = score_mask & iou_mask
             batch_fn_bboxes.append(nms_bboxes[pos_mask])
             batch_fn_score.append(nms_scores[pos_mask])
             batch_fn_label.append(nms_labels[pos_mask])

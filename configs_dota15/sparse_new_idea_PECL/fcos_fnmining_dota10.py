@@ -4,20 +4,22 @@ from copy import deepcopy
 
 '''重要的参数写在前面:'''
 # DOTA数据集版本(1.0 or 1.5)
-version = 1.5
-ann_ratio = 1
-# 数据集路径(无监督分支用那些稀疏标注+无标注的数据)
-train_unsup_image_dir = f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train/images'
-# train_unsup_label_dir = f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/sparse_PECL/{version}/sparse_ann_10per/train' 
-train_unsup_label_dir = f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/sparse_s2teacher/train/{version}/annfiles_{ann_ratio}per'
-# train_unsup_label_dir = f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train/{version}/annfiles' # 全标注
+version = 1.0
+ann_ratio = 5
+# 数据集路径(trainval)
+train_unsup_image_dir = f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/trainval/images'
+train_unsup_label_dir = f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/sparse_PECL/{version}/sparse_ann_{ann_ratio}per/trainval' 
+# 数据集路径(train)
+# train_unsup_image_dir = f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train/images' 
+# train_unsup_label_dir = f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/sparse_PECL/{version}/sparse_ann_{ann_ratio}per/train' 
+
 val_image_dir =         f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/val/images'
 val_label_dir =         f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/val/{version}/annfiles'
 test_image_dir =        f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/test/images'
 
 angle_version = 'le90'
 # 类别数
-nc = 16
+nc = 15
 # 伪标签筛选超参
 semi_loss = dict(type='RotatedSparseDTBLLoss', cls_channels=nc, loss_type='origin', bbox_loss_type='l1', 
                  # 'topk', 'top_dps', 'catwise_top_dps', 'global_w', 'sla'
@@ -26,56 +28,18 @@ semi_loss = dict(type='RotatedSparseDTBLLoss', cls_channels=nc, loss_type='origi
 
 # 无监督分支权重
 unsup_loss_weight = 1.0
-# 是否使用高斯椭圆标签分配 (注意GA分配得搭配QualityFocalLoss)
-bbox_head_type = 'SparseRotatedBLFCOSGAHead'
+# 使用高斯椭圆标签分配 (注意GA分配得搭配QualityFocalLoss)
+bbox_head_type = 'SparseRotatedBLFCOSGAHeadWORegGT'
 loss_cls=dict(type='QualityFocalLoss', use_sigmoid=True, beta=2.0, loss_weight=1.0, activated=True, reduction='none')
 # bbox_head_type = 'SparseRotatedBLFCOSHead'
 # loss_cls=dict(type='FocalLoss', use_sigmoid=True, gamma=2.0, alpha=0.25, loss_weight=1.0)
+# 一些超参数
+pos_thres=1.0
+pos_beta=5.0
+neg_beta=5.0
 
-
-# # 是否开启选择一致性自监督分支
-# use_ss_branch=True
-# ss_branch = dict(
-#     nc=nc,
-#     rand_angle_range=[45, 135], 
-#     flip_p=0.0, 
-#     # 'nearest', 'bilinear'
-#     score_interpolate_mode='nearest',
-#     box_interpolate_mode='nearest',
-#     # 损失权重:
-#     score_loss_w=0.1, 
-#     box_loss_w=0.1
-# )
-
-# # 是否开启refine head
-# use_refine_head=True
-# roi_head=dict(
-#     type='GIRoIHead', # ORCNNRoIHead GIRoIHead
-#     bbox_roi_extractor=dict(
-#         type='RotatedSingleRoIExtractor',
-#         roi_layer=dict(
-#             type='RoIAlignRotated',
-#             out_size=7,
-#             sample_num=2,
-#             clockwise=True),
-#         out_channels=256,
-#         featmap_strides=[8, 16, 32, 64, 128]),
-#     bbox_coder=dict(
-#         type='DeltaXYWHAOBBoxCoder',
-#         angle_range=angle_version,
-#         norm_factor=None,
-#         edge_swap=True,
-#         proj_xy=True,
-#         target_means=(.0, .0, .0, .0, .0),
-#         target_stds=(0.1, 0.1, 0.2, 0.2, 0.1)),
-#     nc=nc,
-#     add_noise_p=0,
-#     # 'share_head' 'avg_pool' 'share_fchead'
-#     roi_pooling = 'share_fchead', 
-#     assigner='HungarianWithIoUMatching',
-# )
-
-
+# 加了防止图像上没GT的时候报错:
+find_unused_parameters=True
 
 
 # 是否开启选择一致性自监督分支
@@ -86,9 +50,10 @@ ss_branch=None
 use_refine_head=False
 roi_head=None
 
-burn_in_steps = 120000
+
+burn_in_steps = 12800
 # 是否导入权重
-# load_from = '/data/yht/code/sood-mcl/log/dtbaseline/DOTA1.0/10per_global-w/joint-score_beta-2.0/latest.pth'
+# load_from = 'log/sparse_fnmining_gihead/1.0/burn-in-12800_ga_sfpm-thres0.1-fn-allweight-thres1.0-beta5.0_gihead-posthr0.7-noclsloss_reggt-thr0.9_10per/latest.pth'
 load_from = None
 
 
@@ -102,6 +67,8 @@ load_from = None
 
 # model settings
 detector = dict(
+    # semi_mmrotate/models/detectors/sparse_rotated_baseline_refine_fcos.py ->
+    # 继承 mmrotate-0.3.4/mmrotate/models/detectors/rotated_fcos.py
     type='SparseRotatedBLRefineFCOS',
     backbone=dict(
         type='ResNet',
@@ -140,7 +107,12 @@ detector = dict(
         loss_cls=loss_cls,
         loss_bbox=dict(type='RotatedIoULoss', loss_weight=1.0, reduction='none'),
         loss_centerness=dict(
-            type='CrossEntropyLoss', use_sigmoid=True, loss_weight=1.0, reduction='none')),
+            type='CrossEntropyLoss', use_sigmoid=True, loss_weight=1.0, reduction='none'),
+        # 一些超参数
+        pos_thres=pos_thres,
+        pos_beta=pos_beta,
+        neg_beta=neg_beta,
+    ),
     # 这部分充当去噪微调模块:
     # (roi_head, train_cfg, test_cfg): reference: /data/yht/code/sood-mcl/mmrotate-0.3.4/configs/oriented_rcnn/oriented_rcnn_r50_fpn_1x_dota_le90.py
     roi_head=roi_head,
@@ -206,7 +178,7 @@ detector = dict(
 )
 
 model = dict(
-    type="RotatedDTBaselineGISSOnlySparse",
+    type="RotatedSparseGIWORegGT",
     model=detector,
     nc=nc,
     # 核心部分:
@@ -286,7 +258,7 @@ dataset_type = 'DOTADataset'
 classes = ('plane', 'baseball-diamond', 'bridge', 'ground-track-field',
            'small-vehicle', 'large-vehicle', 'ship', 'tennis-court',
            'basketball-court', 'storage-tank', 'soccer-ball-field',
-           'roundabout', 'harbor', 'swimming-pool', 'helicopter', 'container-crane')
+           'roundabout', 'harbor', 'swimming-pool', 'helicopter')
 data = dict(
     samples_per_gpu=2,
     workers_per_gpu=5,
@@ -309,11 +281,12 @@ data = dict(
         pipeline=test_pipeline,
         # filter_empty_gt=False,
     ),
+    # 提交服务器:
     test=dict(
         type=dataset_type,
-        img_prefix=val_image_dir,
-        ann_file=val_label_dir,
-        classes=classes,
+        img_prefix=test_image_dir,
+        ann_file=test_image_dir,
+        # classes=classes,
         pipeline=test_pipeline,
     ),
     sampler=dict(

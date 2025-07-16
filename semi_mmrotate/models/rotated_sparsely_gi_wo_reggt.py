@@ -123,7 +123,7 @@ class RotatedSparseGIWORegGT(RotatedSemiDetector):
                 format_data = FNMining.fp_mining(bs, batch_t_nms_bboxes, batch_t_nms_scores, batch_t_nms_labels, format_data, aug_orders)
 
 
-
+ 
 
         '''稀疏监督分支(before burn-in) / student稀疏监督训练(sparse-level) (after burn-in)'''
         # student部分前向+计算损失
@@ -174,7 +174,7 @@ class RotatedSparseGIWORegGT(RotatedSemiDetector):
             # 置信度太低的那些挖掘样本反而回归的不对或是负样本
             s_roi_losses = self.student.roi_head.loss(
                 s_fpn_feat, 
-                s_rbb_preds, s_flat_cls_score.reshape(bs, -1, self.nc), s_flat_centerness.reshape(bs, -1), 
+                s_rbb_preds, s_flat_cls_score.reshape(bs, -1, self.nc).detach(), s_flat_centerness.reshape(bs, -1), 
                 format_data[aug_orders[0]]['gt_bboxes'], format_data[aug_orders[0]]['gt_labels'], 
                 format_data[aug_orders[0]], 
                 train_mode='train_sup' 
@@ -194,11 +194,6 @@ class RotatedSparseGIWORegGT(RotatedSemiDetector):
         return losses
 
 
-
-
-
-
-        # TODO: gihead
 
 
 

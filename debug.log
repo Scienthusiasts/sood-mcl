@@ -13,7 +13,15 @@ python test.py \
 --show-dir log/new_sparse/1.0/globalw_burn-in-120000_ga_10per/eval_result/vis_result \
 
 
-
+# 推理测试集生成提交文件:
+# globalw val (sparsely ann)
+python test.py \
+--config configs_dota15/sparse_new_idea_PECL/fcos_fnmining_dota10.py \
+--checkpoint log/sparse_fnmining_gihead_PECL/1.0/burn-in-12800_ga_sfnm-thres0.1-fn-allweight-thres1.0-beta5.0_5per_trainval/best_0.693139_mAP.pth \
+--work-dir log/sparse_fnmining_gihead_PECL/1.0/burn-in-12800_ga_sfnm-thres0.1-fn-allweight-thres1.0-beta5.0_5per_trainval/eval_result \
+--gpu-ids 5 \
+--format-only \
+--eval-options submission_dir=log/sparse_fnmining_gihead_PECL/1.0/burn-in-12800_ga_sfnm-thres0.1-fn-allweight-thres1.0-beta5.0_5per_trainval/Task1_results
 
 
 

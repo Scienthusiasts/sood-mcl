@@ -5,60 +5,55 @@ from copy import deepcopy
 '''重要的参数写在前面:'''
 # DOTA数据集版本(1.0 or 1.5)
 version = 1.0
-# 数据集路径(有监督分支用那些稀疏标注的数据)
-train_sup_image_dir =   f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train/images'
-train_sup_label_dir =   f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/sparse_train/{version}/sparse_ann_10per/train_labeled'
-train_unsup_image_dir = train_sup_image_dir
+ann_ratio = 10
 # 数据集路径(无监督分支用那些稀疏标注+无标注的数据)
-train_unsup_label_dir = f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/sparse_train/{version}/sparse_ann_10per/train'
-# train_unsup_label_dir = f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/sparse_train/{version}/sparse_ann_10per/train_unlabeled'
-
-
+train_unsup_image_dir = f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train/images'
+# train_unsup_label_dir = f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/sparse_PECL/{version}/sparse_ann_10per/train' 
+train_unsup_label_dir = f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/sparse_s2teacher/train/{version}/annfiles_{ann_ratio}per'
+# train_unsup_label_dir = f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train/{version}/annfiles' # 全标注
 val_image_dir =         f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/val/images'
 val_label_dir =         f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/val/{version}/annfiles'
 test_image_dir =        f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/test/images'
 
 angle_version = 'le90'
 # 类别数
-nc = 16
+nc = 15
 # 伪标签筛选超参
-semi_loss = dict(type='RotatedDTBLGIHeadLoss', cls_channels=nc, loss_type='origin', bbox_loss_type='l1', 
+semi_loss = dict(type='RotatedSparseDTBLLoss', cls_channels=nc, loss_type='origin', bbox_loss_type='l1', 
                  # 'topk', 'top_dps', 'catwise_top_dps', 'global_w', 'sla'
                  p_selection = dict(mode='global_w', k=0.01, beta=-1.), # 当mode=='top_dps'时, beta为S_pds的权重系数
                  )
 
 # 无监督分支权重
 unsup_loss_weight = 1.0
-# 是否使用高斯椭圆标签分配 (注意GA分配得搭配QualityFocalLoss)
-bbox_head_type = 'SemiRotatedBLFCOSGAHead'
-loss_cls=dict(type='QualityFocalLoss', use_sigmoid=True, beta=2.0, loss_weight=1.0, activated=True)
-# bbox_head_type = 'SemiRotatedBLFCOSHead'
+# 使用高斯椭圆标签分配 (注意GA分配得搭配QualityFocalLoss)
+bbox_head_type = 'SparseRotatedBLFCOSGAHeadWORegGT'
+loss_cls=dict(type='QualityFocalLoss', use_sigmoid=True, beta=2.0, loss_weight=1.0, activated=True, reduction='none')
+# bbox_head_type = 'SparseRotatedBLFCOSHead'
 # loss_cls=dict(type='FocalLoss', use_sigmoid=True, gamma=2.0, alpha=0.25, loss_weight=1.0)
+# 一些超参数
+pos_thres=1.0
+pos_beta=5.0
+neg_beta=5.0
 
+# 加了防止图像上没GT的时候报错:
+find_unused_parameters=True
 
 # 是否开启选择一致性自监督分支
-use_ss_branch=True
-ss_branch = dict(
-    nc=nc,
-    rand_angle_range=[45, 135], 
-    flip_p=0.0, 
-    # 'nearest', 'bilinear'
-    score_interpolate_mode='nearest',
-    box_interpolate_mode='nearest',
-    # 损失权重:
-    score_loss_w=0.1, 
-    box_loss_w=0.1
-)
+use_ss_branch=False
+ss_branch=None
 
 # 是否开启refine head
 use_refine_head=False
 roi_head=None
 
 
-burn_in_steps = 6400
+burn_in_steps = 120000
 # 是否导入权重
-# load_from = '/data/yht/code/sood-mcl/log/dtbaseline/DOTA1.5/ss-branch/global-w_gihead/joint-score-sigmoid_burn-in-12800_gi-head_all-refine-loss_box-O2M-loss_detach_GA_ssloss-joint-jsd-dim0-w1.0/latest.pth'
+# load_from = 'log/sparse_fnmining_gihead/1.0/burn-in-12800_ga_sfpm-thres0.1-fn-allweight-thres1.0-beta5.0_gihead-posthr0.7-noclsloss_reggt-thr0.9_10per/latest.pth'
 load_from = None
+
+
 
 
 
@@ -69,7 +64,7 @@ load_from = None
 
 # model settings
 detector = dict(
-    type='SemiRotatedBLRefineFCOS',
+    type='SparseRotatedBLRefineFCOS',
     backbone=dict(
         type='ResNet',
         depth=50,
@@ -105,9 +100,14 @@ detector = dict(
         bbox_coder=dict(
             type='DistanceAnglePointCoder', angle_version=angle_version),
         loss_cls=loss_cls,
-        loss_bbox=dict(type='RotatedIoULoss', loss_weight=1.0),
+        loss_bbox=dict(type='RotatedIoULoss', loss_weight=1.0, reduction='none'),
         loss_centerness=dict(
-            type='CrossEntropyLoss', use_sigmoid=True, loss_weight=1.0)),
+            type='CrossEntropyLoss', use_sigmoid=True, loss_weight=1.0, reduction='none'),
+        # 一些超参数
+        pos_thres=pos_thres,
+        pos_beta=pos_beta,
+        neg_beta=neg_beta,
+    ),
     # 这部分充当去噪微调模块:
     # (roi_head, train_cfg, test_cfg): reference: /data/yht/code/sood-mcl/mmrotate-0.3.4/configs/oriented_rcnn/oriented_rcnn_r50_fpn_1x_dota_le90.py
     roi_head=roi_head,
@@ -173,14 +173,13 @@ detector = dict(
 )
 
 model = dict(
-    type="RotatedDTBaselineGISSSparse",
+    type="RotatedSparseGIWORegGT",
     model=detector,
     nc=nc,
     # 核心部分:
     use_ss_branch=use_ss_branch,
     ss_branch=ss_branch,
     use_refine_head=use_refine_head,
-
     semi_loss=semi_loss,
     train_cfg=dict(
         iter_count=0,
@@ -229,30 +228,11 @@ weak_pipeline = [
 ]
 unsup_pipeline = [
     dict(type="LoadImageFromFile"),
-    # dict(type="LoadAnnotations", with_bbox=True),
+    dict(type="LoadAnnotations", with_bbox=True),
     # generate fake labels for data format compatibility
-    dict(type="LoadEmptyAnnotations", with_bbox=True),
+    # dict(type="LoadEmptyAnnotations", with_bbox=True),
     dict(type="STMultiBranch", unsup_strong=deepcopy(strong_pipeline), unsup_weak=deepcopy(weak_pipeline),
          common_pipeline=common_pipeline, is_seq=True), 
-]
-sup_pipeline = [
-    dict(type='LoadImageFromFile'),
-    dict(type='LoadAnnotations', with_bbox=True),
-    dict(type='RResize', img_scale=(1024, 1024)),
-    dict(
-        type='RRandomFlip',
-        flip_ratio=[0.25, 0.25, 0.25],
-        direction=['horizontal', 'vertical', 'diagonal'],
-        version=angle_version),
-    dict(type="ExtraAttrs", tag="sup_weak"),
-    dict(type='Normalize', **img_norm_cfg),
-    dict(type='Pad', size_divisor=32),
-    dict(type='DefaultFormatBundle'),
-    dict(type='Collect', keys=['img', 'gt_bboxes', 'gt_labels'],
-         meta_keys=('filename', 'ori_filename', 'ori_shape',
-                    'img_shape', 'pad_shape', 'scale_factor', 'flip',
-                    'flip_direction', 'img_norm_cfg', 'tag')
-         )
 ]
 test_pipeline = [
     dict(type='LoadImageFromFile'),
@@ -273,26 +253,19 @@ dataset_type = 'DOTADataset'
 classes = ('plane', 'baseball-diamond', 'bridge', 'ground-track-field',
            'small-vehicle', 'large-vehicle', 'ship', 'tennis-court',
            'basketball-court', 'storage-tank', 'soccer-ball-field',
-           'roundabout', 'harbor', 'swimming-pool', 'helicopter', 'container-crane')
+           'roundabout', 'harbor', 'swimming-pool', 'helicopter')
 data = dict(
-    samples_per_gpu=3,
+    samples_per_gpu=2,
     workers_per_gpu=5,
     train=dict(
-        type="SemiDataset",
-        sup=dict(
-            type=dataset_type,
-            ann_file=train_sup_label_dir,
-            img_prefix=train_sup_image_dir,
-            classes=classes,
-            pipeline=sup_pipeline,
-        ),
+        type="SparseDataset",
         unsup=dict(
             type=dataset_type,
             ann_file=train_unsup_label_dir,
             img_prefix=train_unsup_image_dir,
             classes=classes,
             pipeline=unsup_pipeline,
-            filter_empty_gt=False,
+            filter_empty_gt=True,
         ),
     ),
     val=dict(
@@ -300,23 +273,32 @@ data = dict(
         img_prefix=val_image_dir,
         ann_file=val_label_dir,
         classes=classes,
-        pipeline=test_pipeline
+        pipeline=test_pipeline,
+        # filter_empty_gt=False,
     ),
     test=dict(
         type=dataset_type,
         img_prefix=val_image_dir,
         ann_file=val_label_dir,
+        # ann_file=train_unsup_label_dir,
+        # img_prefix=train_unsup_image_dir,
         classes=classes,
         pipeline=test_pipeline,
     ),
     sampler=dict(
         train=dict(
             type="MultiSourceSampler",
-            sample_ratio=[2, 1],
+            sample_ratio=[2],
             seed=42
         )
     ),
 )
+
+
+
+
+
+
 
 custom_hooks = [
     dict(type="NumClassCheckHook"),

@@ -4,7 +4,7 @@
 # and /data/yht/code/sood-mcl/semi_mmrotate/models/dense_heads/semi_rotated_fcos_head_mcl.py
 import torch
 from mmcv.runner import force_fp32
-from mmdet.core import multi_apply, reduce_mean
+from mmdet.core import multi_apply, reduce_mean, build_bbox_coder
 from mmrotate.models.builder import ROTATED_HEADS, build_loss
 # 继承自这个(核心就是在标签分配时改成了Gaussian标签分配):
 from .sparse_rotated_baseline_fcos_head import SparseRotatedBLFCOSHead
@@ -268,9 +268,9 @@ class SparseRotatedBLFCOSGAHeadWORegGT(SparseRotatedBLFCOSHead):
         gt_scores = torch.ones_like(gt_labels)
         sgt_bboxes = gt_bboxes
         sgt_labels = gt_labels
-        pos_thres = 1.0 
-        pos_beta = 5.0
-        neg_beta = 5.0
+        pos_thres = self.pos_thres
+        pos_beta = self.pos_beta
+        neg_beta = self.neg_beta
         fn_mining_flag = gt_bboxes.shape[1]==6
         # 把bbox坐标和其置信度区分开
         if fn_mining_flag:

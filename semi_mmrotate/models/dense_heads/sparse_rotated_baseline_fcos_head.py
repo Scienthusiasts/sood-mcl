@@ -98,6 +98,11 @@ class SparseRotatedBLFCOSHead(RotatedAnchorFreeHead):
                          name='conv_cls',
                          std=0.01,
                          bias_prob=0.01)),
+                 reg_pos_thres=1.0,
+                 pos_thres=1.0,
+                 reg_pos_beta=5.0,
+                 pos_beta=5.0,
+                 neg_beta=5.0,
                  **kwargs):
         self.regress_ranges = regress_ranges
         self.center_sampling = center_sampling
@@ -119,7 +124,12 @@ class SparseRotatedBLFCOSHead(RotatedAnchorFreeHead):
             self.loss_angle = build_loss(loss_angle)
             self.h_bbox_coder = build_bbox_coder(h_bbox_coder)
         # Angle predict length
-
+        self.reg_pos_thres = reg_pos_thres
+        self.pos_thres = pos_thres
+        self.reg_pos_beta = reg_pos_beta
+        self.pos_beta = pos_beta
+        self.neg_beta = neg_beta
+        
     def _init_layers(self):
         """Initialize layers of the head."""
         super()._init_layers()

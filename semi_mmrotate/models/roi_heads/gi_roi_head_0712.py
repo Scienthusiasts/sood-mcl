@@ -95,6 +95,46 @@ class ShareFCHead(nn.Module):
 
 
 
+# class GroupAggregation(nn.Module):
+#     '''GroupAggregation 
+#     '''
+#     def __init__(self, hidden_dim, only_top1):
+#         super(GroupAggregation, self).__init__()
+#         self.hidden_dim = hidden_dim
+#         self.only_top1 = only_top1
+
+#         self.group_attn = MultiheadAttention(embed_dims=self.hidden_dim, num_heads=8, dropout=0.0, batch_first=True)
+#         self.group_attn_norm = build_norm_layer(dict(type='LN'), self.hidden_dim)[1]
+#         self.group_ffn = FFN(embed_dims=self.hidden_dim, feedforward_channels=2048)
+#         self.group_ffn_norm = build_norm_layer(dict(type='LN'), self.hidden_dim)[1]
+
+#     def forward(self, dense_roi_feats):
+#         """如果存在有GTBox和任何NMSBox都匹配不上, 则把这个GTBox加入到NMSBox中(仅在训练时调用)
+#             Args:
+#                 dense_roi_feats: [total_group_nums, nums_per_group,  256]
+
+#             Return:
+
+#         """
+#         # 输入形状: [total_group_nums, nums_per_group, 256]
+
+#         # 目前是组内的局部交互
+#         # MHGA(MHSA的变体): 只取每个组的第一个预测作为query, 简化运算(这个预测代表每个group中最好的预测, 这个预测和其他预测交互就行了, 其他无所谓)
+#         # MHGA + LN:  out = Q = [total_group_nums, 1, 256], k = v = [total_group_nums, nums_per_group, 256]
+#         if self.only_top1:
+#             Q_roi_feat = dense_roi_feats[:, 0, :].unsqueeze(1)
+#         else:
+#             Q_roi_feat = dense_roi_feats
+#         aggr_roi_feat = self.group_attn(query=Q_roi_feat, key=dense_roi_feats, value=dense_roi_feats)
+#         aggr_roi_feat = self.group_attn_norm(aggr_roi_feat + Q_roi_feat)
+
+#         out_roi_feat = self.group_ffn(aggr_roi_feat)
+#         out_roi_feat = self.group_ffn_norm(out_roi_feat + aggr_roi_feat)
+#         return out_roi_feat
+
+
+
+
 class GroupAggregation(nn.Module):
     '''GroupAggregation 
     '''
@@ -108,10 +148,12 @@ class GroupAggregation(nn.Module):
         self.group_ffn = FFN(embed_dims=self.hidden_dim, feedforward_channels=2048)
         self.group_ffn_norm = build_norm_layer(dict(type='LN'), self.hidden_dim)[1]
 
-    def forward(self, dense_roi_feats):
-        """如果存在有GTBox和任何NMSBox都匹配不上, 则把这个GTBox加入到NMSBox中(仅在训练时调用)
+    def forward(self, q_feats, k_feats, v_feats):
+        """GroupAggregation 前向
             Args:
-                dense_roi_feats: [total_group_nums, nums_per_group,  256]
+                q_feats: [total_group_nums, nums_per_group,  256]
+                k_feats: [total_group_nums, nums_per_group,  256]
+                v_feats: [total_group_nums, nums_per_group,  256]
 
             Return:
 
@@ -122,20 +164,14 @@ class GroupAggregation(nn.Module):
         # MHGA(MHSA的变体): 只取每个组的第一个预测作为query, 简化运算(这个预测代表每个group中最好的预测, 这个预测和其他预测交互就行了, 其他无所谓)
         # MHGA + LN:  out = Q = [total_group_nums, 1, 256], k = v = [total_group_nums, nums_per_group, 256]
         if self.only_top1:
-            Q_roi_feat = dense_roi_feats[:, 0, :].unsqueeze(1)
-        else:
-            Q_roi_feat = dense_roi_feats
-        aggr_roi_feat = self.group_attn(query=Q_roi_feat, key=dense_roi_feats, value=dense_roi_feats)
-        aggr_roi_feat = self.group_attn_norm(aggr_roi_feat + Q_roi_feat)
+            q_feats = q_feats[:, 0, :].unsqueeze(1)
 
-        out_roi_feat = self.group_ffn(aggr_roi_feat)
-        out_roi_feat = self.group_ffn_norm(out_roi_feat + aggr_roi_feat)
-        return out_roi_feat
+        aggr_feats = self.group_attn(query=q_feats, key=k_feats, value=v_feats)
+        aggr_feats = self.group_attn_norm(aggr_feats + q_feats)
 
-
-
-
-
+        out_feats = self.group_ffn(aggr_feats)
+        out_feats = self.group_ffn_norm(out_feats + aggr_feats)
+        return out_feats
 
 
 
@@ -178,9 +214,8 @@ class GIRoIHead(BaseModule):
         if roi_pooling == 'avg_pool':
             self.roi_pooling = nn.AdaptiveAvgPool2d(1)
 
-        # cls_proj
-        self.cls_proj = nn.Linear(self.nc, self.hidden_dim)
-        self.cat_feat_proj = nn.Linear(2 * self.hidden_dim, self.hidden_dim)
+        # learnable类别prototype
+        self.cls_tokens = nn.Embedding(self.nc, self.hidden_dim)
         # pos_emb_proj
         self.pos_emb_proj = nn.Linear(5, self.hidden_dim)
         # group aggregation
@@ -298,24 +333,19 @@ class GIRoIHead(BaseModule):
             Returns: 
                 represent_interative_roi_feat: 经过组注意力交互过后的特征 [total_group_nums, nums_per_group, 256] 
         """
-
-        '''将dense_scores升维后进行aggregation'''
-        # [total_group_nums, nums_per_group, nc] -> [total_group_nums, nums_per_group, 256]
-        dense_scores = self.cls_proj(dense_scores)
-        dense_scores = self.CGA(dense_scores)
-        '''将roi_feature与roi_scores拼接在一起'''
-        cat_dense_roi_feats = torch.cat([dense_roi_feats, dense_scores], dim=-1)
-        # [total_group_nums, nums_per_group, 256+256] -> [total_group_nums, nums_per_group, 256]
-        cat_dense_roi_feats = self.cat_feat_proj(cat_dense_roi_feats)
-        '''依据roi相对于簇中心的坐标生成位置编码, 加到dense_roi_feats上'''
+        '''将dense_scores与cls_tokens交互后生成cls_feats'''
+        dense_cls_feats = torch.einsum("BNC, CD -> BND", dense_scores, self.cls_tokens.weight)
+        '''依据roi相对于簇中心的坐标生成位置编码, 加到feats上'''
         # 获得相对于每组第一个框的相对偏移坐标
         related_dense_rois = self.convert_to_relative_coordinates(dense_rois)
         # 通过线性映射为可学习位置编码
         pos_emb = self.pos_emb_proj(related_dense_rois)
-        cat_dense_roi_feats += pos_emb
-        '''Aggregation'''
-        top1_aggr_roi_feat = self.FGA(cat_dense_roi_feats)
+        dense_cls_feats += pos_emb
+        dense_roi_feats += pos_emb
 
+        '''Aggregation'''
+        aggr_roi_feats = self.CGA(q_feats=dense_roi_feats.clone(), k_feats=dense_cls_feats.clone(), v_feats=dense_roi_feats.clone())
+        top1_aggr_roi_feat = self.FGA(q_feats=aggr_roi_feats.clone(), k_feats=aggr_roi_feats.clone(), v_feats=aggr_roi_feats.clone())
         # [total_group_nums, 1, 256]
         return top1_aggr_roi_feat
 
