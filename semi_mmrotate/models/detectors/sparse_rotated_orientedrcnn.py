@@ -4,7 +4,7 @@ from mmrotate.models.builder import build_loss
 
 
 @ROTATED_DETECTORS.register_module()
-class SemiRotatedOrientedRCNN(OrientedRCNN):
+class SparseRotatedOrientedRCNN(OrientedRCNN):
 
     def forward_train(self,
                       img,
@@ -20,10 +20,14 @@ class SemiRotatedOrientedRCNN(OrientedRCNN):
         super(RotatedTwoStageDetector, self).forward_train(img, img_metas)
         x = self.extract_feat(img)
         losses = dict()
-        # RPN forward and loss
+        
         if not get_boxes:
+            '''RPN 前向+损失'''
             proposal_cfg = self.train_cfg.get('rpn_proposal',
                                                 self.test_cfg.rpn)
+
+            # 
+            gt_bboxes = [gt_bbox[:, :5] for gt_bbox in gt_bboxes]
             rpn_losses, proposal_list = self.rpn_head.forward_train(
                 x,
                 img_metas,
@@ -33,6 +37,9 @@ class SemiRotatedOrientedRCNN(OrientedRCNN):
                 proposal_cfg=proposal_cfg)
             losses.update(rpn_losses)
 
+
+
+            '''roi head 前向+损失'''
             if loss_configs != None and loss_configs['type'] == 'FocalLoss':  # for unbiased teacher
                 roi_cls_loss_orign = self.roi_head.bbox_head.loss_cls
                 self.roi_head.bbox_head.loss_cls = build_loss(loss_configs)
@@ -50,6 +57,8 @@ class SemiRotatedOrientedRCNN(OrientedRCNN):
                                                         gt_bboxes_ignore)
             self.roi_head.bbox_head.loss_cls = roi_cls_loss_orign
             losses.update(roi_losses)
+
+            
             loss_dict = {}
             for loss_name, loss_value in losses.items():
                 if isinstance(loss_value, torch.Tensor):

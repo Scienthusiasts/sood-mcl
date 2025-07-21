@@ -2,6 +2,7 @@ import numpy as np
 import torchvision.transforms as transforms
 from PIL import ImageFilter
 import copy
+import os
 import pycocotools.mask as maskUtils
 import os.path as osp
 import mmcv
@@ -15,6 +16,7 @@ from mmdet.datasets.pipelines import Compose as BaseCompose
 
 from mmrotate.datasets.builder import ROTATED_PIPELINES
 from mmrotate.datasets.pipelines import PolyRandomRotate
+
 
 def to_tensor(data):
 
@@ -127,6 +129,17 @@ class STMultiBranch(object):
                     return None
                 multi_results.append(res)
         return multi_results
+
+
+
+
+
+
+
+
+
+
+
 
 
 @ROTATED_PIPELINES.register_module()

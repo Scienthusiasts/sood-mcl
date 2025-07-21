@@ -14,14 +14,14 @@ python test.py \
 
 
 # 推理测试集生成提交文件:
-# globalw val (sparsely ann)
+# (sparsely ann)
 python test.py \
---config configs_dota15/sparse_new_idea_PECL/fcos_fnmining_dota10.py \
---checkpoint log/sparse_fnmining_gihead_PECL/1.0/burn-in-12800_ga_sfnm-thres0.1-fn-allweight-thres1.0-beta5.0_5per_trainval/best_0.693139_mAP.pth \
---work-dir log/sparse_fnmining_gihead_PECL/1.0/burn-in-12800_ga_sfnm-thres0.1-fn-allweight-thres1.0-beta5.0_5per_trainval/eval_result \
---gpu-ids 5 \
+--config configs_dota15/sparse_new_idea_PECL/unbaisedteacher_orientedrcnn_baseline_dota10.py \
+--checkpoint log/sparse_fnmining_gihead_PECL/1.0/unbiased-orcnn_burn-in-12800_fn-thr0.8_5per_trainval/best_0.598706_mAP.pth \
+--work-dir log/sparse_fnmining_gihead_PECL/1.0/unbiased-orcnn_burn-in-12800_fn-thr0.8_5per_trainval/eval_result \
+--gpu-ids 0 \
 --format-only \
---eval-options submission_dir=log/sparse_fnmining_gihead_PECL/1.0/burn-in-12800_ga_sfnm-thres0.1-fn-allweight-thres1.0-beta5.0_5per_trainval/Task1_results
+--eval-options submission_dir=log/sparse_fnmining_gihead_PECL/1.0/unbiased-orcnn_burn-in-12800_fn-thr0.8_5per_trainval/Task1_results
 
 
 

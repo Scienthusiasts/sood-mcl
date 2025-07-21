@@ -28,6 +28,6 @@ from .rotated_sparsely_gi_wo_reggt import RotatedSparseGIWORegGT
 
 # unbiasedteacher based
 from .rotated_sparsely_unbaised_teacher import RotatedSparselyUnbaisedTeacher
-
+from .rotated_sparsely_unbaised_teacher_gi import RotatedSparselyUnbaisedTeacherGI
 
 

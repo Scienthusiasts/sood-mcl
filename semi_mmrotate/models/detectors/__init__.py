@@ -7,3 +7,5 @@ from .semi_rotated_baseline_refine_fcos import SemiRotatedBLRefineFCOS
 from .semi_rotated_orientedrcnn import SemiRotatedOrientedRCNN
 
 from .sparse_rotated_baseline_refine_fcos import SparseRotatedBLRefineFCOS
+from .sparse_rotated_orientedrcnn import SparseRotatedOrientedRCNN
+from .sparse_rotated_orientedrcnn_gi import SparseRotatedOrientedRCNNGI

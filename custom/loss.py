@@ -255,7 +255,7 @@ class HungarianWithIoUMatching():
 
 
 
-    def assign_single(self, gt_boxes, pred_boxes, gt_labels, pred_logits, img_meta, maxiou_reassign=True):
+    def assign_single(self, gt_boxes, pred_boxes, gt_labels, pred_logits, img_meta, maxiou_reassign=True, return_iou_cost=False):
         """匈牙利匹配(一张图像)
             Args:
                 gt_boxes:    [n, 5] (cx, cy, w, h, θ) (已解码)
@@ -288,7 +288,7 @@ class HungarianWithIoUMatching():
             # 分类代价
             cls_cost = self.cls_cost(expanded_pred_logits, expanded_gt_logits, use_weight=False, reduction="none").mean(1).reshape(n, m)
             # RIoU代价
-            iou_cost = 1.0 - box_iou_rotated(gt_boxes, pred_boxes[:, :5])  
+            iou_cost = torch.clamp(1.0 - box_iou_rotated(gt_boxes, pred_boxes[:, :5]), 0.0, 1.0)
             # L1位置代价(可以考虑不重叠的情况)
             img_h, img_w, _ = img_meta['img_shape']
             factor = gt_boxes.new_tensor([img_w, img_h, img_w, img_h]).unsqueeze(0)
@@ -322,11 +322,14 @@ class HungarianWithIoUMatching():
         match_gt_logits = torch.zeros((m, self.nc), device=gt_boxes.device)
         match_gt_logits[pred_idx] = gt_logits[gt_idx]
 
-        return match_pred_gt_bboxes, match_gt_logits, gt_idx, pred_idx
+        if return_iou_cost:
+            return match_pred_gt_bboxes, match_gt_logits, gt_idx, pred_idx, iou_cost
+        else:
+            return match_pred_gt_bboxes, match_gt_logits, gt_idx, pred_idx
 
 
 
-    def assign(self, batch_gt_boxes, batch_pred_boxes, batch_gt_labels, batch_pred_logits, batch_img_meta):
+    def assign(self, batch_gt_boxes, batch_pred_boxes, batch_gt_labels, batch_pred_logits, batch_img_meta, return_iou_cost=True):
         """匈牙利匹配(整个batch)
             Args:
                 batch_gt_boxes:    list([group_nums, 5=(cx, cy, w, h, θ)], ..., [...]) 真实的gt
@@ -341,7 +344,7 @@ class HungarianWithIoUMatching():
                 batch_idx:            [total_box_num] batch索引
 
         """
-        batch_match_pred_gt_bboxes, batch_match_gt_logits, _, _ = multi_apply(self.assign_single, batch_gt_boxes, batch_pred_boxes, batch_gt_labels, batch_pred_logits, batch_img_meta['img_metas'])
+        batch_match_pred_gt_bboxes, batch_match_gt_logits, _, _, batch_iou_cost = multi_apply(self.assign_single, batch_gt_boxes, batch_pred_boxes, batch_gt_labels, batch_pred_logits, batch_img_meta['img_metas'], return_iou_cost=True)
         # 可视化匹配box(一般情况下注释)
         # vis_HM_boxes(batch_match_pred_gt_bboxes, batch_match_gt_logits, batch_img_meta, './vis_HM_result')
         # 可视化匹配score(一般情况下注释)
@@ -356,12 +359,69 @@ class HungarianWithIoUMatching():
         for i in range(len(batch_match_gt_logits)):
             idx = torch.ones(batch_match_gt_logits[i].shape[0]).to(match_gt_logits.device)
             batch_idx.append(idx * i)
+
         batch_idx = torch.cat(batch_idx) 
 
-        return batch_idx, match_pred_gt_bboxes, match_gt_logits
+        if return_iou_cost:
+            return batch_iou_cost, batch_idx, match_pred_gt_bboxes, match_gt_logits
+        else:
+            return batch_idx, match_pred_gt_bboxes, match_gt_logits
 
 
 
 
 
+def proto_contrastive_loss(a, b, labels, temperature=0.1, weight_factor=None, class_counts=None):
+    """
+    InfoNCE损失实现：对比原型(a)和样本特征(b)
+    
+    参数:
+        a (torch.Tensor):      原型特征 [c, dim]
+        b (torch.Tensor):      样本特征 [bs, dim]
+        labels (torch.Tensor): 样本类别标签 [bs], 取值范围(0, c-1)
+        temperature (float):   温度系数
+        class_counts:          每个类别的样本数 [num_classes]
+        
+    返回:
+        loss: 对比损失值
+    """
+    # 计算相似度
+    logits = cosine_simmilarity(a, b) / temperature  # [bs, c]
+    
+    # 计算类别权重（根据类别下样本数量的逆频率加权）
+    if class_counts is not None:
+        weights = 1.0 / (class_counts[labels] + 1e-8)  # 避免除零
+        if weight_factor is not None:
+            weights = weights / weight_factor.sum()  
+        else:
+            weights = weights / weights.sum()  
+    else:
+        weights = torch.ones_like(labels, dtype=torch.float)
+    # 加权因子(iou)
+    if weight_factor is not None:
+        weights *= weight_factor
 
+    # 加权交叉熵损失
+    loss = F.cross_entropy(logits, labels, reduction='none')
+    loss = (loss * weights).mean()
+    
+    return loss
+
+
+def cosine_simmilarity(a, b):
+    """余弦相似度：对比原型(a)和样本特征(b)
+    
+    参数:
+        a (torch.Tensor):      原型特征 [c, dim]
+        b (torch.Tensor):      样本特征 [bs, dim]
+        
+    返回:
+        sim (torch.Tensor):   样本与原型的相似度 [bs, c]
+    """
+    # 归一化特征
+    a_norm = F.normalize(a, p=2, dim=1)
+    b_norm = F.normalize(b, p=2, dim=1)
+    
+    # 计算相似度
+    sim = torch.matmul(b_norm, a_norm.T) 
+    return sim

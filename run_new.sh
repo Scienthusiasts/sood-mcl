@@ -44,6 +44,18 @@ cd /data/yht/code/sood-mcl
 #     --launcher pytorch \
 #     --work-dir log/sparse_fnmining_gihead/debug
 
+# # 10per_unbaisedteacher_baseline # CUDA_LAUNCH_BLOCKING=1 
+# /home/yht/.conda/envs/sood-mcl/bin/python -m torch.distributed.launch --node_rank=0 --master_addr="127.0.0.1" --nproc_per_node=2 --nnodes=1 --master_port=29550 --use_env\
+#     train.py configs_dota15/sparse_new_idea_PECL/unbaisedteacher_orientedrcnn_baseline_dota10.py \
+#     --launcher pytorch \
+#     --work-dir log/sparse_fnmining_gihead/debug
+
+# 10per_unbaisedteacher_gihead # CUDA_LAUNCH_BLOCKING=1 
+# /home/yht/.conda/envs/sood-mcl/bin/python -m torch.distributed.launch --node_rank=0 --master_addr="127.0.0.1" --nproc_per_node=2 --nnodes=1 --master_port=29550 --use_env\
+#     train.py configs_dota15/sparse_new_idea_PECL/unbaisedteacher_orientedrcnn_gi_dota10.py \
+#     --launcher pytorch \
+#     --work-dir log/sparse_fnmining_gihead/debug
+
 
 
 
@@ -95,13 +107,18 @@ cd /data/yht/code/sood-mcl
 #     --work-dir log/sparse_fnmining_gihead_PECL/1.0/burn-in-12800_ga_sfnm-thres0.1-fn-allweight-thres1.0-beta5.0_gihead0712-posthr0.7-noclsloss_reggt-thr0.9_5per_trainval
 
 # 10per_unbaisedteacher_baseline # CUDA_LAUNCH_BLOCKING=1 
-# sh run_new.sh > log/sparse_fnmining_gihead_PECL/1.0/unbiased-orcnn_burn-in-120000_5per_trainval_/terminal_log.log 2>&1
-/home/yht/.conda/envs/sood-mcl/bin/python -m torch.distributed.launch --node_rank=0 --master_addr="127.0.0.1" --nproc_per_node=2 --nnodes=1 --master_port=29576 --use_env\
-    train.py configs_dota15/sparse_new_idea_PECL/unbaisedteacher_orientedrcnn_baseline_dota10.py \
+# sh run_new.sh > log/sparse_fnmining_gihead_PECL/1.0/unbiased-orcnn_burn-in-12800_fn-thr1.0_5per_trainval/terminal_log.log 2>&1
+# /home/yht/.conda/envs/sood-mcl/bin/python -m torch.distributed.launch --node_rank=0 --master_addr="127.0.0.1" --nproc_per_node=2 --nnodes=1 --master_port=29576 --use_env\
+#     train.py configs_dota15/sparse_new_idea_PECL/unbaisedteacher_orientedrcnn_baseline_dota10.py \
+#     --launcher pytorch \
+#     --work-dir log/sparse_fnmining_gihead_PECL/1.0/unbiased-orcnn_burn-in-12800_fn-thr1.0_5per_trainval
+
+# 10per_unbaisedteacher_gihead # CUDA_LAUNCH_BLOCKING=1 
+# sh run_new.sh > log/sparse_fnmining_gihead_PECL/1.0/unbiased-orcnn_burn-in-12800_fn-thr1.0_gi0712-only-update-posthr1.0-noclsloss-contproto1.0-gt0.1-loss_detach_5per_trainval/terminal_log.log 2>&1
+/home/yht/.conda/envs/sood-mcl/bin/python -m torch.distributed.launch --node_rank=0 --master_addr="127.0.0.1" --nproc_per_node=2 --nnodes=1 --master_port=29566 --use_env\
+    train.py configs_dota15/sparse_new_idea_PECL/unbaisedteacher_orientedrcnn_gi_dota10.py \
     --launcher pytorch \
-    --work-dir log/sparse_fnmining_gihead_PECL/1.0/unbiased-orcnn_burn-in-120000_5per_trainval_
-
-
+    --work-dir log/sparse_fnmining_gihead_PECL/1.0/unbiased-orcnn_burn-in-12800_fn-thr1.0_gi0712-only-update-posthr1.0-noclsloss-contproto1.0-gt0.1-loss_detach_5per_trainval
 
 
 '''sparsely dota1.0 (PECL) with Semi-supervised OD'''

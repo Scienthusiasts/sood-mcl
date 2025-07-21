@@ -536,11 +536,13 @@ def vis_gi_head_bboxes_batch(img_metas, bs, batch_idx, nms_bboxes, gi_boxes, roo
         cv2.imwrite(img_save_path, img)
 
 
-def vis_gi_head_bboxes_single(image, img_name, nms_bboxes, gi_boxes, root_dir):
+def vis_gi_head_bboxes_single(image, img_name, nms_bboxes, nms_scores, nms_preds, gi_boxes, root_dir, vis_text=True):
     '''无监督分支可视化微调模块的推理结果(dense, refined, pgt)
         Args:
             img_metas:   图像和图像信息
             nms_bboxes:  nms后保留的结果
+            nms_scores:  nms_bboxes的置信度
+            nms_preds:   nms_bboxes的预测类别
             gi_boxes:    gi_head微调结果  
             root_dir:    可视化结果保存路径
         Returns:
@@ -560,6 +562,33 @@ def vis_gi_head_bboxes_single(image, img_name, nms_bboxes, gi_boxes, root_dir):
     img = OpenCVDrawBox(img, poly_nms_rbb.detach().cpu().numpy(), (0,0,255), 2)
     # 可视化refine proposals框
     img = OpenCVDrawBox(img, poly_refine_rbb.detach().cpu().numpy(), (0,255,0), 2)
+
+    # 可视化标签
+    if vis_text:
+        # 在每个预测框中心绘制类别和置信度得分(只绘制fn)
+        # 获取旋转框的中心点坐标
+        centers = nms_bboxes[:, :2].cpu().numpy()  # [N, 2], 格式为(x, y)
+        # 遍历每个框和得分
+        for center, score, label in zip(centers, nms_scores.cpu().numpy(), nms_preds.cpu().numpy()):
+            x, y = int(center[0]), int(center[1])
+            # 绘制得分（保留2位小数）
+            text = f"{label} | {score:.2f}"
+            # 设置文本样式
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = 0.5
+            text_color = (255, 255, 255)  # 白色文字
+            bg_color = (0, 0, 0)          # 黑色背景
+            # 获取文本大小
+            text_size = cv2.getTextSize(text, font, font_scale, 1)[0]
+            # 绘制背景矩形（提高可读性）
+            cv2.rectangle(img, 
+                        (x - text_size[0]//2 - 2, y - text_size[1]//2 - 2),
+                        (x + text_size[0]//2 + 2, y + text_size[1]//2 + 2),
+                        bg_color, -1)  # -1表示填充
+            # 绘制文本
+            cv2.putText(img, text, (x - text_size[0]//2, y + text_size[1]//2),
+                    font, font_scale, text_color, 1, cv2.LINE_AA)
+
     # 保存结果
     if not os.path.exists(root_dir):os.makedirs(root_dir)
     img_save_path = f"{root_dir}/{img_name}"

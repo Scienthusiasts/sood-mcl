@@ -17,13 +17,20 @@ val_label_dir =         f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/val/{
 test_image_dir =        f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/test/images'
 # 类别数
 nc = 15
-burn_in_steps = 120000
+burn_in_steps = 12800
+# 生成teacher伪标签的置信度阈值
+score_thr = 0.01
+# 样本挖掘阈值:
+fn_mining_score_thr = 1.0
+
+# load_from = "log/sparse_fnmining_gihead_PECL/1.0/unbiased-orcnn_burn-in-12800_fn-thr1.0_5per_trainval/iter_70400.pth"
+load_from = None
 
 # model settings
 detector = dict(
     # semi_mmrotate/models/detectors/semi_rotated_orientedrcnn.py (只改了forward_train()) -> 
     # 继承 mmrotate-0.3.4/mmrotate/models/detectors/oriented_rcnn.py
-    type='SemiRotatedOrientedRCNN',
+    type='SparseRotatedOrientedRCNN',
     backbone=dict(
         type='ResNet',
         depth=50,
@@ -40,7 +47,7 @@ detector = dict(
         out_channels=256,
         num_outs=5),
     rpn_head=dict(
-        type='OrientedRPNHead',
+        type='SparseOrientedRPNHead',
         in_channels=256,
         feat_channels=256,
         version=angle_version,
@@ -55,7 +62,7 @@ detector = dict(
             target_means=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
             target_stds=[1.0, 1.0, 1.0, 1.0, 0.5, 0.5]),
         loss_cls=dict(
-            type='CrossEntropyLoss', use_sigmoid=True, loss_weight=1.0),
+            type='CrossEntropyLoss', use_sigmoid=True, loss_weight=1.0), # , reduction='none'
         loss_bbox=dict(
             type='SmoothL1Loss', beta=0.1111111111111111, loss_weight=1.0)),
     roi_head=dict(
@@ -145,6 +152,7 @@ model = dict(
     # 继承 semi_mmrotate/models/rotated_semi_detector.py ->
     # 继承 mmrotate-0.3.4/mmrotate/models/detectors/base.py
     type="RotatedSparselyUnbaisedTeacher",
+    fn_mining_score_thr=fn_mining_score_thr,
     model=detector,
     train_cfg=dict(
         iter_count=0,
@@ -155,7 +163,7 @@ model = dict(
         rcnn_configs=dict(
             nms_pre=2000,
             min_bbox_size=0,
-            score_thr=0.9,
+            score_thr=score_thr,
             nms=dict(iou_thr=0.1),
             max_per_img=2000),
         loss_configs=dict(
@@ -317,7 +325,6 @@ log_config = dict(
 
 dist_params = dict(backend='nccl')
 log_level = 'INFO'
-load_from = None
 resume_from = None
 workflow = [('train', 1)]   # mode, iters
 

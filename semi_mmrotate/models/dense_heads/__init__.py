@@ -9,3 +9,6 @@ from .semi_rotated_baseline_fcos_ga_head import SemiRotatedBLFCOSGAHead
 from .sparse_rotated_baseline_fcos_head import SparseRotatedBLFCOSHead
 from .sparse_rotated_baseline_fcos_ga_head import SparseRotatedBLFCOSGAHead
 from .sparse_rotated_baseline_fcos_ga_head_wo_reggt import SparseRotatedBLFCOSGAHeadWORegGT
+from .sparse_oriented_rpn_head_baseline import SparseOrientedRPNHead
+# 下面这个打算加负样本加权的, 还没改好
+# from .sparse_oriented_rpn_head import SparseOrientedRPNHead
