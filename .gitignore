@@ -2,4 +2,4 @@ log/
 vis*/
 __pycache__
 *.pt
-terminal_log.log
+*.log

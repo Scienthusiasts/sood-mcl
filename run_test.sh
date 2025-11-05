@@ -1,6 +1,6 @@
 #!/usr/bin/bash
-# export CUDA_VISIBLE_DEVICES=0,1
-export CUDA_VISIBLE_DEVICES=2,3
+export CUDA_VISIBLE_DEVICES=0,1
+# export CUDA_VISIBLE_DEVICES=2,3
 # export CUDA_VISIBLE_DEVICES=4,5
 # export CUDA_VISIBLE_DEVICES=6,7
 
@@ -16,9 +16,32 @@ cd /data/yht/code/sood-mcl
 
 
 '''SSOD'''
-# 10per_unbaisedteacher(SPL) # CUDA_LAUNCH_BLOCKING=1 
-# sh run_new.sh > log/semi_PECL/1.0/unbaisedteacher_burn-in-12800_10per/terminal_log.log 2>&1
+# 10per_unbaisedteacher_sparse # CUDA_LAUNCH_BLOCKING=1 
+# /home/yht/.conda/envs/sood-mcl/bin/python -m torch.distributed.launch --node_rank=0 --master_addr="127.0.0.1" --nproc_per_node=2 --nnodes=1 --master_port=29550 --use_env\
+#     train.py configs_dota15/sparse_new_idea_PECL/unbaisedteacher_orientedrcnn_gi_dota10.py \
+#     --launcher pytorch \
+#     --work-dir log/debug
+
+
+
+
+
+# 10per_unbaisedteacher_semi # CUDA_LAUNCH_BLOCKING=1 
 /home/yht/.conda/envs/sood-mcl/bin/python -m torch.distributed.launch --node_rank=0 --master_addr="127.0.0.1" --nproc_per_node=2 --nnodes=1 --master_port=29550 --use_env\
-    train.py configs_dota15/sparse_new_idea_PECL/unbaisedteacher_orientedrcnn_gi_dota10.py \
+    train.py configs_dota15/sparse_new_idea_semi/unbaisedteacher_orientedrcnn_gi_dota15.py \
     --launcher pytorch \
     --work-dir log/debug
+
+
+
+
+
+
+
+
+# 10per_unbaisedteacher-zhang # CUDA_LAUNCH_BLOCKING=1 
+# /home/yht/.conda/envs/sood-mcl/bin/python -m torch.distributed.launch --node_rank=0 --master_addr="127.0.0.1" --nproc_per_node=2 --nnodes=1 --master_port=29550 --use_env\
+#     train.py configs_dota15/sparse_new_idea_PECL/semi_orcnn_sparse_ann_dota10p_le90.py \
+#     --launcher pytorch \
+#     --work-dir log/debug
+

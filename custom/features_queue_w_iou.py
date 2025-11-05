@@ -41,14 +41,16 @@ class DistributedClassFeatureQueue:
         
         # 每个rank都有自己的队列
         self.feats_queues = [deque() for _ in range(num_classes)]
+        self.ious_queues = [deque() for _ in range(num_classes)]
         self.iter_queues = [deque() for _ in range(num_classes)]
 
 
-    def push(self, features, class_ids):
+    def push(self, features, ious, class_ids):
         """将特征推入对应类别的队列中
         
         参数:
             features (torch.Tensor): 特征张量，形状为(bs, dim)
+            ious     记录features对应的bbox与匹配上的GT的iou
             class_ids (torch.Tensor): 类别ID张量，形状为(bs,)
         """
         features = features.to(self.device)
@@ -63,6 +65,7 @@ class DistributedClassFeatureQueue:
                 
             mask = (class_ids == class_id)
             self.feats_queues[class_id].append(features[mask].detach().clone())
+            self.ious_queues[class_id].append(ious[mask].detach().clone())
             iters = torch.full((mask.sum().item(),), self.current_iter, 
                              dtype=torch.long, device=self.device)
             self.iter_queues[class_id].append(iters)
@@ -84,14 +87,17 @@ class DistributedClassFeatureQueue:
                 
             remaining_feats = []
             remaining_iters = []
-            for feat_block, iter_block in zip(self.feats_queues[class_id], self.iter_queues[class_id]):
+            remaining_ious = []
+            for feat_block, iou_block, iter_block in zip(self.feats_queues[class_id], self.ious_queues[class_id], self.iter_queues[class_id]):
                 mask = (iter_block > threshold)
                 
                 if mask.any():
                     remaining_feats.append(feat_block[mask])
+                    remaining_ious.append(iou_block[mask])
                     remaining_iters.append(iter_block[mask])
             
             self.feats_queues[class_id] = deque(remaining_feats)
+            self.ious_queues[class_id] = deque(remaining_ious)
             self.iter_queues[class_id] = deque(remaining_iters)
 
 
@@ -103,15 +109,19 @@ class DistributedClassFeatureQueue:
             class_id (int): 类别ID
             
         返回:
+            tuple: (features, ious)
             - features (torch.Tensor): 该类别的所有特征，形状为(n, dim)
+            - ious (torch.Tensor): 对应的IOU值，形状为(n,)
         """
         assert 0 <= class_id < self.num_classes, "类别ID超出范围"
         
         # 收集当前rank的特征数据
         if not self.feats_queues[class_id]:
             local_feats = torch.empty(0, self.dim, device=self.device)
+            local_ious = torch.empty(0, device=self.device)
         else:
             local_feats = torch.cat(list(self.feats_queues[class_id]))
+            local_ious = torch.cat(list(self.ious_queues[class_id]))
         
         # 获取所有rank的数据量
         local_size = torch.tensor([local_feats.shape[0]], device=self.device)
@@ -121,7 +131,7 @@ class DistributedClassFeatureQueue:
         # 准备接收缓冲区
         max_size = max(s.item() for s in sizes)
         if max_size == 0:
-            return torch.empty(0, self.dim, device=self.device)
+            return torch.empty(0, self.dim, device=self.device), torch.empty(0, device=self.device)
             
         # 填充本地数据到统一尺寸
         if local_feats.shape[0] < max_size:
@@ -129,22 +139,30 @@ class DistributedClassFeatureQueue:
                                     device=self.device, dtype=local_feats.dtype)
             local_feats = torch.cat([local_feats, feat_padding])
             
+            iou_padding = torch.zeros(max_size - local_ious.shape[0],
+                                    device=self.device, dtype=local_ious.dtype)
+            local_ious = torch.cat([local_ious, iou_padding])
         
         # 收集所有特征数据
         gathered_feats = [torch.zeros_like(local_feats) for _ in range(dist.get_world_size())]
         dist.all_gather(gathered_feats, local_feats)
         
+        # 收集所有IOU数据
+        gathered_ious = [torch.zeros_like(local_ious) for _ in range(dist.get_world_size())]
+        dist.all_gather(gathered_ious, local_ious)
         
         # 拼接有效数据
         valid_feats = []
-        for feats, size in zip(gathered_feats, sizes):
+        valid_ious = []
+        for feats, ious, size in zip(gathered_feats, gathered_ious, sizes):
             if size > 0:
                 valid_feats.append(feats[:size])
+                valid_ious.append(ious[:size])
         
         if not valid_feats:
-            return torch.empty(0, self.dim, device=self.device)
+            return torch.empty(0, self.dim, device=self.device), torch.empty(0, device=self.device)
         
-        return torch.cat(valid_feats)
+        return torch.cat(valid_feats), torch.cat(valid_ious)
     
 
     def __len__(self):

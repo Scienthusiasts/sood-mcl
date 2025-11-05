@@ -21,13 +21,19 @@ from .mcl_ss import MCLTeacherSS
 from .rotated_dt_baseline_ss_gi_head_sparsely import RotatedDTBaselineGISSSparse
 
 # fcos (denseteacher) based:
-# 只保留强弱增强数据, 并去除有监督分支, 去除burn-in, 加上gihead
+# 只包含伪标签挖掘
+from .rotated_sparsely_fcos import RotatedSparseFCOS
+# 只保留强弱增强数据, 加上gihead
 from .rotated_sparsely_gi import RotatedSparseGI
-# 只保留强弱增强数据, 并去除有监督分支, 去除burn-in, 加上gihead, gihead只更新不利用其伪框
+# 只保留强弱增强数据, 加上gihead, gihead只更新不利用其伪框(利用是指用gihead伪正样本用于回归损失)
 from .rotated_sparsely_gi_wo_reggt import RotatedSparseGIWORegGT
 
-# unbiasedteacher based
+# unbiasedteacher 
 from .rotated_sparsely_unbaised_teacher import RotatedSparselyUnbaisedTeacher
 from .rotated_sparsely_unbaised_teacher_gi import RotatedSparselyUnbaisedTeacherGI
 
+# RotatedSparselyUnbaisedTeacherGI 改成支持半监督格式训练
+from .rotated_semi_unbaised_teacher_gi import RotatedSemiUnbaisedTeacherGI
 
+# Zhang
+from .semi_sa_ood import SemiSAOOD

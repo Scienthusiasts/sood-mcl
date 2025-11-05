@@ -18,12 +18,11 @@ class FNMining(nn.Module):
 
 
     @staticmethod
-    def fp_mining(bs, batch_t_nms_bboxes, batch_t_nms_scores, batch_t_nms_labels, format_data, aug_orders, score_thr=0.1, mode='sparse'):
+    def fp_mining(bs, batch_t_nms_bboxes, batch_t_nms_scores, batch_t_nms_labels, format_data, aug_orders, score_thr=0.1):
         """teacher正样本挖掘(sparse-level)
         """
         # 1.挖掘正样本
-        batch_t_fn_bboxes, batch_t_fn_score, batch_fn_label = \
-            FNMining.batch_fn_mining_strategy(batch_t_nms_bboxes, batch_t_nms_scores, batch_t_nms_labels, format_data, score_thr=score_thr, mode=mode)
+        batch_t_fn_bboxes, batch_t_fn_score, batch_fn_label = FNMining.batch_fn_mining_strategy(batch_t_nms_bboxes, batch_t_nms_scores, batch_t_nms_labels, format_data, score_thr=score_thr)
         # 2.将挖掘出的正样本作为gt加入format_data(student的输入)中
         for i in range(bs):
             '''添加置信度(方便后续进行负样本加权)'''
@@ -55,11 +54,12 @@ class FNMining(nn.Module):
 
 
     @staticmethod
-    def batch_fn_mining_strategy(batch_nms_bboxes, batch_nms_scores, batch_nms_labels, format_data, iou_thres=0.1, score_thr=0.1, mode='sparse'):
+    def batch_fn_mining_strategy(batch_nms_bboxes, batch_nms_scores, batch_nms_labels, format_data, iou_thres=0.1, score_thr=0.1):
         """batch正样本挖掘具体策略
         """
-        batch_gt_bboxes = format_data['unsup_weak']['gt_bboxes']
-        batch_gt_labels = format_data['unsup_weak']['gt_labels']
+        mode = 'unsup_weak'
+        batch_gt_bboxes = format_data[mode]['gt_bboxes']
+        batch_gt_labels = format_data[mode]['gt_labels']
         batch_fn_bboxes, batch_fn_score, batch_fn_label, batch_fn_iou = [], [], [], []
         batch_tn_bboxes, batch_tn_score, batch_tn_label = [], [], []
         # 每张图片分别挖掘
@@ -71,23 +71,19 @@ class FNMining(nn.Module):
                 batch_fn_label.append([])
                 batch_fn_iou.append([])
                 continue
-
-            # 1.潜在正样本的置信度必须大于阈值
+            # 1.潜在正样本的类别必须在稀疏gt中出现
+            cat_mask = torch.isin(nms_labels, gt_labels)
+            # 2.潜在正样本和稀疏GT的IoU不能太大(太大说明和gt冗余)
+            riou = box_iou_rotated(nms_bboxes[:, :-1], gt_bboxes)
+            riou, _ = torch.max(riou, dim=-1)
+            iou_mask = riou <= iou_thres
+            # 3.潜在正样本的置信度必须在所有nms box平均置信度之上
             # mean_nms_score = nms_scores[iou_mask].mean() if iou_mask.sum() > 0 else nms_scores.mean()
             # score_mask = nms_scores >= mean_nms_score
             score_mask = nms_scores >= score_thr
-            if mode == 'sparse':
-                # 2.潜在正样本和稀疏GT的IoU不能太大(太大说明和gt冗余)
-                riou = box_iou_rotated(nms_bboxes[:, :-1], gt_bboxes)
-                riou, _ = torch.max(riou, dim=-1)
-                iou_mask = riou <= iou_thres
-                # 满足1.2则成为潜在正样本
-                pos_mask = score_mask & iou_mask
-            elif mode == 'unsup':
-                # riou对于unsup分支无意义，占位
-                riou = torch.ones_like(nms_labels) 
-                pos_mask = score_mask
-
+            # 满足1.2.3则成为潜在正样本
+            # pos_mask = cat_mask & score_mask & iou_mask
+            pos_mask = score_mask & iou_mask
             batch_fn_bboxes.append(nms_bboxes[pos_mask])
             batch_fn_score.append(nms_scores[pos_mask])
             batch_fn_label.append(nms_labels[pos_mask])

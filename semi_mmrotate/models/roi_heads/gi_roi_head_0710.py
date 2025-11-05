@@ -183,9 +183,9 @@ class GIRoIHead(BaseModule):
         # group aggregation
         self.FA = GroupAggregation(self.hidden_dim, only_top1=False)
         self.GA = GroupAggregation(self.hidden_dim, only_top1=True)
-
         # 特征维度映射(self.hidden_dim + self.nc -> self.hidden_dim)
         self.cat_dense_roi_feats_proj = nn.Linear(self.hidden_dim + self.nc, self.hidden_dim)
+        
         # 分类头
         self.cls_fcs = nn.ModuleList()
         for _ in range(1):

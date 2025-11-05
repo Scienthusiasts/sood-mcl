@@ -36,6 +36,11 @@ class QFLv2(nn.Module):
             # 一开始假设所有样本都是负样本, 因此实际上有对负样本计算损失, 对应的标签是全0
             loss = F.binary_cross_entropy(pred_logits, zerolabel, reduction='none') * pt.pow(beta)
             # positive goes to bbox quality
+
+            # 这句话有时候会报错, 不知道为啥(内容如下):
+            # ... ...
+            # ../aten/src/ATen/native/cuda/Loss.cu:92: operator(): block: [79,0,0], thread: [118,0,0] Assertion `input_val >= zero && input_val <= one` failed.
+            # RuntimeError: numel: integer multiplication overflow 
             try:
                 pt = gt_logits[weight] - pred_logits[weight]
             except:
@@ -55,8 +60,6 @@ class QFLv2(nn.Module):
         elif reduction == "sum":
             loss = loss.sum()
         return loss
-
-
 
 
 
@@ -197,6 +200,9 @@ class BCELoss(nn.Module):
 
     def forward(self, tensor1, tensor2, reduction='none'):
         return F.binary_cross_entropy(tensor1, tensor2, reduction=reduction)
+    
+
+
 
 
 
@@ -266,6 +272,7 @@ class HungarianWithIoUMatching():
         """
         device = gt_boxes.device
         n, m, = gt_boxes.shape[0], pred_boxes.shape[0]
+
         '''将gt_label也转化为logits, 这样方便计算QFLv2类别损失:'''
         # 创建基础One-Hot矩阵(全为eps) [n, cls_num]
         gt_logits = torch.full((n, self.nc), self.eps, dtype=torch.float32, device=device)
@@ -314,7 +321,6 @@ class HungarianWithIoUMatching():
         # 根据配对索引生成配对的结果 [m, 5=(cx, cy, w, h, θ)]
         match_gt_logits = torch.zeros((m, self.nc), device=gt_boxes.device)
         match_gt_logits[pred_idx] = gt_logits[gt_idx]
-        # print(gt_logits)
 
         if return_iou_cost:
             return match_pred_gt_bboxes, match_gt_logits, gt_idx, pred_idx, iou_cost

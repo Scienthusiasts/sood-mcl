@@ -11,12 +11,11 @@ from mmrotate.models.builder import ROTATED_HEADS
 from mmrotate.models.roi_heads.rotate_standard_roi_head import RotatedStandardRoIHead
 from mmrotate.models.builder import (ROTATED_HEADS, build_head, build_roi_extractor,
                        build_shared_head)
-from mmcv.cnn.bricks.transformer import FFN, MultiheadAttention, TransformerLayerSequence
-from mmdet.core import multi_apply, unmap
+from mmcv.cnn.bricks.transformer import FFN, MultiheadAttention
+from mmdet.core import multi_apply
 from custom.utils import *
 from custom.visualize import *
-from custom.features_queue_w_iou import DistributedClassFeatureQueue
-from custom.loss import QFLv2, HungarianWithIoUMatching, proto_contrastive_loss, cosine_simmilarity
+from custom.loss import QFLv2, HungarianWithIoUMatching, cosine_simmilarity
 # for debug:
 # torch.autograd.set_detect_anomaly(True)
 
@@ -208,10 +207,7 @@ class GIRoIHead(BaseModule):
                 build_activation_layer(dict(type='ReLU', inplace=False))) # inplace=True
         self.fc_reg = nn.Linear(self.hidden_dim, 5)
 
-        # 对比学习类别prototypes
-        self.cls_prototypes = nn.Parameter(torch.randn(self.nc, self.hidden_dim))
-        # 对比学习用到的特征队列:
-        self.feats_queue = DistributedClassFeatureQueue(self.nc, self.hidden_dim, keep_iters=50)
+
 
 
     def add_GT2NMS_boxes_single(self, nms_bboxes, nms_labels, nms_scores, gt_bboxes, gt_labels, img_meta, pgt_scores=None):
@@ -290,7 +286,7 @@ class GIRoIHead(BaseModule):
         # list([group_nums, box_per_group], ..., [...]) list([group_nums, box_per_group, 7], ..., [...]) list([group_nums, box_per_group, nc], ..., [...]) list([group_nums, 7], ..., [...])
         batch_group_iou, batch_group_bboxes, batch_group_scores, batch_nms_bboxes, batch_nms_scores = self.batch_grouping_by_nmsboxes(rbb_preds, cls_score, batch_nms_bboxes, batch_nms_scores, iou_thres=0.1, score_thres=1e-6, K=8)
         # 可视化分组结果(依据nms_boxes分组, 通常注释)
-        # vis_grouping_batch(batch_nms_bboxes, batch_group_iou, batch_group_bboxes, img_meta, './vis_sup_gt_grouping')
+        # vis_grouping_batch(batch_nms_bboxes, batch_group_iou, batch_group_bboxes, img_meta, './vis_grouping')
         return batch_group_iou, batch_group_bboxes, batch_group_scores, batch_nms_bboxes, batch_nms_scores
 
 
@@ -405,7 +401,7 @@ class GIRoIHead(BaseModule):
                 dense_rbb_preds:   [bs, total_anchor_num, 7=(cx, cy, w, h, θ, joint_score, label)]    
                 dense_cls_score:   [bs, total_anchor_num, cls_num] (已经过sigmoid)
                 dense_centerness:  [bs, total_anchor_num] (已经过sigmoid)
-                gt_bboxes:         list([group_nums, 5=(cx, cy, w, h, θ)], ..., [...]) 真实的gt / pgt
+                gt_bboxes:         list([group_nums, 5 / 6=(cx, cy, w, h, θ, score)], ..., [...]) 真实的gt / pgt
                 gt_labels:         list([group_nums], ..., [...]) 真实的gt标签 / pgt
                 img_meta:          batch图像信息和标注
                 train_mode:        当前的训练模式(训练有监督数据=sup, 训练伪标签=unsup)
@@ -433,23 +429,43 @@ class GIRoIHead(BaseModule):
         batch_iou_cost, batch_idx, match_pred_gt_bboxes, match_gt_logits = self.assigner.assign(filter_gt_bboxes, batch_nms_bboxes, filter_gt_labels, batch_nms_scores, img_meta, return_iou_cost=True)
 
 
-
         '''回归损失'''
         # valid_gt_mask找到那些和GT匹配上的预测框(即哪些框是正样本)
         valid_gt_mask = match_pred_gt_bboxes[1][:, 2]!=0
         fg_num = valid_gt_mask.sum()
-        bboxes_preds = self.bbox_coder.decode(match_pred_gt_bboxes[0][valid_gt_mask], reg_delta[valid_gt_mask])
-        bbox_loss = self.reg_loss(bboxes_preds, match_pred_gt_bboxes[1][valid_gt_mask]).mean()
+        bboxes_preds = self.bbox_coder.decode(match_pred_gt_bboxes[0], reg_delta)
+        bbox_loss = self.reg_loss(bboxes_preds[valid_gt_mask], match_pred_gt_bboxes[1][valid_gt_mask]).mean()
         with torch.no_grad():
             # 计算refine_box和gt的iou与nms_box与box的IoU，并计算差值, 能大概反映改善程度
-            refine_iou = box_iou_rotated(bboxes_preds, match_pred_gt_bboxes[1][valid_gt_mask], aligned=True)
+            refine_iou = box_iou_rotated(bboxes_preds[valid_gt_mask], match_pred_gt_bboxes[1][valid_gt_mask], aligned=True)
             nms_iou = box_iou_rotated(match_pred_gt_bboxes[0][valid_gt_mask], match_pred_gt_bboxes[1][valid_gt_mask], aligned=True)
             diff_iou = (refine_iou-nms_iou).mean()
 
+
+
+        # TODO:负样本加权:
+        batch_loss_weight = []
+        for batch in range(dense_rbb_preds.shape[0]):
+            batch_mask = batch_idx==batch
+
+            if gt_bboxes[batch].shape[1] == 6:
+                ious = box_iou_rotated(bboxes_preds[batch_mask], gt_bboxes[batch][:, :5])
+                max_ious, max_iou_inds = torch.max(ious, dim=-1)
+                max_iou_scores = gt_bboxes[batch][:, -1][max_iou_inds]
+                pos_mask = valid_gt_mask[batch_mask]
+                max_iou_weight = max_ious * max_iou_scores
+                loss_weight = (1.0 - max_iou_weight).pow(5.0)
+                loss_weight[pos_mask] = 1.0
+            else:
+                loss_weight = torch.ones_like(bboxes_preds[batch_mask][:, -1])
+            batch_loss_weight.append(loss_weight)
+        batch_loss_weight = torch.cat(batch_loss_weight, dim=0)
+
+
         # 可视nms_bboxes和gi_head输出的bboxes对比(默认注释)
         # if gt_bbox.shape[1] == 6:
-        #     all_bboxes_preds = self.bbox_coder.decode(match_pred_gt_bboxes[0][valid_gt_mask], reg_delta[valid_gt_mask])
-        #     vis_gi_head_bboxes_batch(img_meta, len(batch_nms_bboxes), batch_idx[valid_gt_mask], match_pred_gt_bboxes[0][valid_gt_mask], all_bboxes_preds, './vis_gi_bboxes_unsup')
+        #     all_bboxes_preds = self.bbox_coder.decode(match_pred_gt_bboxes[0], reg_delta)
+        #     vis_gi_head_bboxes_batch(img_meta, len(batch_nms_bboxes), batch_idx, gt_bboxes, match_pred_gt_bboxes[0], all_bboxes_preds, batch_loss_weight, './vis_gi_bboxes_unsup')
 
         #     # vis_cls_score = cls_score.sigmoid()
         #     # cat_nms_scores = torch.cat(batch_nms_scores, dim=0)
@@ -459,28 +475,13 @@ class GIRoIHead(BaseModule):
         '''分类损失'''
         cls_score = cls_score.sigmoid()
         # cls_loss = self.cls_loss(cls_score, match_gt_logits, use_weight=True, beta=2.0, reduction='none').sum() / fg_num
-        cls_loss = self.cls_loss(cls_score, match_gt_logits, use_weight=True, beta=2.0, reduction='none').mean()*0
+        cls_loss = self.cls_loss(cls_score, match_gt_logits, use_weight=True, beta=2.0, reduction='none')
+        cls_loss = (cls_loss.sum(dim=-1) * batch_loss_weight) / fg_num
 
-
-
-        '''TODO: 0719 gi_roi_feats对比学习'''
-        # iou_costs后续可以对对比损失加权
-        batch_roi_ious = [1. - torch.min(cost, dim=0, keepdim=True)[0] for cost in batch_iou_cost]
-        roi_ious = torch.cat(batch_roi_ious, dim=1).reshape(-1)[valid_gt_mask]
-        # roi_scores后续可以对对比损失加权
-        # roi_nc_scores = torch.cat(batch_nms_scores, dim=0)[valid_gt_mask]
-        # roi_scores, roi_pred_labels = torch.max(roi_nc_scores, dim=-1)
-
-        roi_labels = torch.max(match_gt_logits, dim=-1)[1][valid_gt_mask]
-        roi_feats = gi_roi_feats[valid_gt_mask]
-        # cont_proto_loss, cont_gt_loss = self.queue_proto_contrast_learning(roi_ious, roi_labels, roi_feats)
-        cont_proto_loss, cont_gt_loss = self.proto_contrast_learning(roi_ious, roi_labels, roi_feats)
 
 
         # 总损失
         losses = {
-            'cont_proto_loss': cont_proto_loss * 1.0,
-            'cont_gt_loss': cont_gt_loss * 0.1,
             'gi_cls_loss':cls_loss, 
             'gi_reg_loss':bbox_loss,
             'iou_improve':diff_iou
@@ -488,113 +489,6 @@ class GIRoIHead(BaseModule):
         return losses
 
 
-
-
-
-
-    # def queue_proto_contrast_learning(self, roi_ious, roi_labels, roi_feats):
-    #     """对那些正样本进行对比学习
-    #         Args:
-    #             roi_ious:   [pos_box_nums     ], roi与匹配上的gt的iou(后续可以对对比损失加权), requires_grad=True
-    #             roi_labels: [pos_box_nums     ], roi对应匹配上的gt的类别, requires_grad=False
-    #             roi_feats:  [pos_box_nums, 256], roi特征, requires_grad=False
-
-    #         Return:
-
-    #     """
-    #     '''1. 更新队列'''
-    #     self.feats_queue.push(roi_feats, roi_ious, roi_labels)
-    #     self.feats_queue.pop()
-    #     '''2. 取出队列中所有样本'''
-    #     all_feats, all_ious, all_labels = [], [], []
-    #     for i in range(self.nc):
-    #         feats, ious = self.feats_queue.get_feats_by_class(i)
-    #         feats_len = feats.shape[0]
-    #         if feats_len > 0:
-    #             all_feats.append(feats)
-    #             all_ious.append(ious)
-    #             all_labels.append(torch.full((feats_len, ), i, dtype=torch.long, device=feats.device))
-    #     # 把所有类别拼在一起
-    #     all_feats = torch.cat(all_feats, dim=0)
-    #     all_ious = torch.cat(all_ious, dim=0)
-    #     all_labels = torch.cat(all_labels, dim=0)
-    #     # 每个类别的样本数量
-    #     nums_per_class = self.feats_queue.__len__()
-
-    #     cont_loss = proto_contrastive_loss(self.cls_prototypes, all_feats, all_labels, weight_factor=all_ious, class_counts=nums_per_class)
-    #     return cont_loss
-        
-
-
-    def queue_proto_contrast_learning(self, roi_ious, roi_labels, roi_feats):
-        """对那些正样本进行对比学习(使用队列考虑最近50iter内的所有正样本)
-            Args:
-                roi_ious:   [pos_box_nums     ], roi与匹配上的gt的iou(后续可以对对比损失加权), requires_grad=True
-                roi_labels: [pos_box_nums     ], roi对应匹配上的gt的类别, requires_grad=False
-                roi_feats:  [pos_box_nums, 256], roi特征, requires_grad=False
-
-            Return:
-
-        """
-        '''1. 更新队列'''
-        self.feats_queue.push(roi_feats, roi_ious, roi_labels)
-        self.feats_queue.pop()
-        '''2. 取出队列中所有样本'''
-        all_feats, all_labels = [], []
-        for i in range(self.nc):
-            feats, ious = self.feats_queue.get_feats_by_class(i)
-            feats_len = feats.shape[0]
-            if feats_len > 0:
-                all_feats.append(feats.mean(dim=0, keepdim=True))
-                all_labels.append(torch.full((1, ), i, dtype=torch.long, device=feats.device))
-        # 把所有类别拼在一起
-        all_feats = torch.cat(all_feats, dim=0)
-        all_labels = torch.cat(all_labels, dim=0)
-
-        labels = torch.arange(len(all_feats), device=all_feats.device)
-        cont_proto_gt_loss = proto_contrastive_loss(all_feats, self.cls_prototypes[all_labels], labels)
-        cont_gt_proto_loss = proto_contrastive_loss(self.cls_prototypes, all_feats, all_labels)
-        cont_proto_loss = 0.5 * (cont_proto_gt_loss + cont_gt_proto_loss)
-        # 当前迭代的样本与proto对比
-        cont_gt_loss = proto_contrastive_loss(self.cls_prototypes.detach(), roi_feats, roi_labels)
-
-        return cont_proto_loss, cont_gt_loss
-        
-
-
-    def proto_contrast_learning(self, roi_ious, roi_labels, roi_feats):
-        """对那些正样本进行对比学习
-            Args:
-                roi_ious:   [pos_box_nums     ], roi与匹配上的gt的iou(后续可以对对比损失加权), requires_grad=True
-                roi_labels: [pos_box_nums     ], roi对应匹配上的gt的类别, requires_grad=False
-                roi_feats:  [pos_box_nums, 256], roi特征, requires_grad=False
-
-            Return:
-
-        """
-        # 提取出每个类别的roi特征并取平均, 保证每个类别正样本只有一个, 但不一定所有类别都有正样本:
-        feats_per_cat, labels_per_cat = [], []
-        for i in range(self.nc):
-            cls_mask = roi_labels==i
-            if(cls_mask.sum() > 0):
-                feats_per_cat.append(roi_feats[cls_mask].mean(dim=0, keepdim=True))
-                labels_per_cat.append(torch.full((1, ), i, dtype=torch.long, device=roi_feats.device))
-        feats_per_cat = torch.cat(feats_per_cat, dim=0)
-        labels_per_cat = torch.cat(labels_per_cat, dim=0)
-
-        # cont_gt_loss: 当前sgt与proto对比(更新sgt) | cont_proto_loss: prototype与当前sgt对比(更新prototype)
-        # 对比矩阵[n, n] (n<=c, 当前batch只有所有类别的某些子集类别)
-        labels = torch.arange(len(labels_per_cat), device=labels_per_cat.device)
-        cont_gt_row_loss = proto_contrastive_loss(self.cls_prototypes.detach()[labels_per_cat], feats_per_cat, labels)
-        cont_gt_col_loss = proto_contrastive_loss(feats_per_cat, self.cls_prototypes.detach()[labels_per_cat], labels)
-        cont_proto_row_loss = proto_contrastive_loss(self.cls_prototypes[labels_per_cat], feats_per_cat.detach(), labels)
-        cont_proto_col_loss = proto_contrastive_loss(feats_per_cat.detach(), self.cls_prototypes[labels_per_cat], labels)
-
-        cont_proto_loss = 0.5 * (cont_proto_row_loss + cont_proto_col_loss)
-        cont_gt_loss = 0.5 * (cont_gt_row_loss + cont_gt_col_loss)
-        return cont_proto_loss, cont_gt_loss
-        
-    
 
 
 
@@ -632,10 +526,7 @@ class GIRoIHead(BaseModule):
             # 预测的类别和类别置信度
             cls_scores = cls_score[last_batch_num:last_batch_num+cur_batch_num]
             single_cls_scores, single_cls_preds = torch.max(cls_scores, dim=1)
-            # 通过特征与proto计算余弦相似度得到类别相似度
-            single_gi_roi_feats = gi_roi_feats[last_batch_num:last_batch_num+cur_batch_num]
-            single_feats_proto_sim = cosine_simmilarity(self.cls_prototypes, single_gi_roi_feats)
-            single_sim_scores, single_sim_preds = torch.max(single_feats_proto_sim, dim=1)
+
 
             last_batch_num += cur_batch_num
             # [nms_box_num, 7=(cx, cy, w, h, θ, cls_score, cls_label)]
@@ -646,7 +537,6 @@ class GIRoIHead(BaseModule):
             # vis_HM_scores(cls_scores.unsqueeze(0), vis_nms_scores.unsqueeze(0), img_meta, './vis_unsup_infer_score')
             # 可视nms_bboxes和gi_head输出的bboxes对比(默认注释)
             # vis_gi_head_bboxes_single(img_meta['img'][batch], img_meta['img_metas'][batch]['ori_filename'], single_nms_boxes, single_cls_scores, single_cls_preds, single_gi_bboxes, './vis_gi_bboxes_infer')
-            # vis_gi_head_bboxes_single(img_meta['img'][batch], img_meta['img_metas'][batch]['ori_filename'], single_nms_boxes, single_sim_scores, single_sim_preds, single_gi_bboxes, './vis_gi_bboxes_infer_sim')
         return batch_gi_box
 
 

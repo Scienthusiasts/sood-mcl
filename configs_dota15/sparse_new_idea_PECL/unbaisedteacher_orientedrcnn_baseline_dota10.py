@@ -15,15 +15,18 @@ train_unsup_label_dir = f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/spars
 val_image_dir =         f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/val/images'
 val_label_dir =         f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/val/{version}/annfiles'
 test_image_dir =        f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/test/images'
+lr=0.01
 # 类别数
 nc = 15
 burn_in_steps = 12800
 # 生成teacher伪标签的置信度阈值
 score_thr = 0.01
 # 样本挖掘阈值:
-fn_mining_score_thr = 1.0
+fn_mining_score_thr = 0.1
+# 是否使用负样本损失加权
+loss_weighting = True
 
-# load_from = "log/sparse_fnmining_gihead_PECL/1.0/unbiased-orcnn_burn-in-12800_fn-thr1.0_5per_trainval/iter_70400.pth"
+# load_from = "log/sparse_fnmining_gihead_PECL/1.0/unbiased-orcnn_burn-in-12800_fn-thr1.0_5per_trainval/iter_12800.pth"
 load_from = None
 
 # model settings
@@ -66,7 +69,10 @@ detector = dict(
         loss_bbox=dict(
             type='SmoothL1Loss', beta=0.1111111111111111, loss_weight=1.0)),
     roi_head=dict(
-        type='OrientedStandardRoIHead',
+        type='SparseOrientedStandardRoIHead',
+        nc=nc,
+        # 负样本损失加权
+        loss_weighting=loss_weighting,
         bbox_roi_extractor=dict(
             type='RotatedSingleRoIExtractor',
             roi_layer=dict(
@@ -91,9 +97,11 @@ detector = dict(
                 target_means=(.0, .0, .0, .0, .0),
                 target_stds=(0.1, 0.1, 0.2, 0.2, 0.1)),
             reg_class_agnostic=True,
-            loss_cls=dict(
-                type='CrossEntropyLoss', use_sigmoid=False, loss_weight=1.0),
-            loss_bbox=dict(type='SmoothL1Loss', beta=1.0, loss_weight=1.0))),
+            loss_cls=dict(type='CrossEntropyLoss', use_sigmoid=False, loss_weight=1.0, reduction='none'),  
+            loss_bbox=dict(type='SmoothL1Loss', beta=1.0, loss_weight=1.0, reduction='none') 
+            # loss_cls=dict(type='CrossEntropyLoss', use_sigmoid=False, loss_weight=1.0),  
+            # loss_bbox=dict(type='SmoothL1Loss', beta=1.0, loss_weight=1.0) 
+            )),
     train_cfg=dict(
         rpn=dict(
             assigner=dict(
@@ -152,6 +160,17 @@ model = dict(
     # 继承 semi_mmrotate/models/rotated_semi_detector.py ->
     # 继承 mmrotate-0.3.4/mmrotate/models/detectors/base.py
     type="RotatedSparselyUnbaisedTeacher",
+    nc=nc,
+    # 对比学习需要提取roi_feats
+    bbox_roi_extractor=dict(
+        type='RotatedSingleRoIExtractor',
+        roi_layer=dict(
+            type='RoIAlignRotated',
+            out_size=7,
+            sample_num=2,
+            clockwise=True),
+        out_channels=256,
+        featmap_strides=[4, 8, 16, 32, 64]),
     fn_mining_score_thr=fn_mining_score_thr,
     model=detector,
     train_cfg=dict(
@@ -290,7 +309,7 @@ evaluation = dict(type="SubModulesDistEvalHook", interval=3200, metric='mAP',
                   save_best='mAP')
 
 # optimizer
-optimizer = dict(type='SGD', lr=0.0025, momentum=0.9, weight_decay=0.0001)
+optimizer = dict(type='SGD', lr=lr, momentum=0.9, weight_decay=0.0001)
 optimizer_config = dict(grad_clip=dict(max_norm=35, norm_type=2))
 
 # learning policy

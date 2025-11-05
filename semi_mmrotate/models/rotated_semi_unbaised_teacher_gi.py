@@ -9,9 +9,9 @@ from custom.ss_branch_sparse import SSBranchSparse
 
 
 @ROTATED_DETECTORS.register_module()
-class RotatedSparselyUnbaisedTeacherGI(RotatedSemiDetector):
+class RotatedSemiUnbaisedTeacherGI(RotatedSemiDetector):
     def __init__(self, fn_mining_score_thr, gi_head_pos_thres, model: dict, use_refine_head, use_ss_branch, ss_branch, train_cfg=None, test_cfg=None, symmetry_aware=False):
-        super(RotatedSparselyUnbaisedTeacherGI, self).__init__(
+        super(RotatedSemiUnbaisedTeacherGI, self).__init__(
             dict(teacher=build_detector(model), student=build_detector(model)),
             semi_loss=None,
             train_cfg=train_cfg,
@@ -48,15 +48,32 @@ class RotatedSparselyUnbaisedTeacherGI(RotatedSemiDetector):
 
 
     def forward_train(self, imgs, img_metas, **kwargs):
-        super(RotatedSparselyUnbaisedTeacherGI, self).forward_train(imgs, img_metas, **kwargs)
+        super(RotatedSemiUnbaisedTeacherGI, self).forward_train(imgs, img_metas, **kwargs)
         losses = dict()
 
         '''数据读取'''
-        format_data = self.wrap_datas(imgs, img_metas, **kwargs)
+        sup_format_data, format_data = self.wrap_datas(imgs, img_metas, **kwargs)
         aug_orders = ['unsup_strong', 'unsup_weak']
+        # vis_sparse_data(format_data, [[],[]], [[],[]], save_dir='./vis_sgt')
+        # vis_sup_data(sup_format_data, save_dir='./vis_sup_img')
 
 
 
+        '''全监督分支'''
+        # student部分前向+计算损失
+        # NOTE:这里会和稀疏GT(挖掘出的正样本)也计算损失, 返回sparse_losses
+        sup_losses, _ = self.student.forward_train(**sup_format_data['sup_weak'])
+
+        # 组织全监督损失
+        for key, val in sup_losses.items():
+            if key[:4] == 'loss':
+                if isinstance(val, list):
+                    losses[f"{key}_sup"] = [self.sup_weight * x for x in val]
+                else:
+                    losses[f"{key}_sup"] = self.sup_weight * val
+            else:
+                losses[key] = val
+                
 
         '''burn-in结束, 开启正样本挖掘'''
         if self.iter_count > self.burn_in_steps:
@@ -94,33 +111,33 @@ class RotatedSparselyUnbaisedTeacherGI(RotatedSemiDetector):
 
                 bs = len(batch_t_nms_bboxes)
                 # 可视化sgt+minging_gt(默认注释)
-                # vis_sparse_data(format_data, batch_t_nms_bboxes, batch_t_nms_labels, save_dir='./vis_minging_origin_gt', vis_text=False, thickness=1)
+                # vis_sparse_data(format_data, batch_t_nms_bboxes, batch_t_nms_labels, save_dir='./vis_minging_gt', vis_text=False, thickness=1)
 
             '''teacher正样本挖掘(sparse-level)'''
             # 挖掘出的正样本会放入format_data中当做gt
             #  list([box_num, 6], ..., [...]), list([box_num], ..., [...]) list([box_num], ..., [...])
-            format_data = FNMining.fp_mining(bs, batch_t_nms_bboxes, batch_t_nms_scores, batch_t_nms_labels, format_data, aug_orders, score_thr=self.fn_mining_score_thr)
+            format_data = FNMining.fp_mining(bs, batch_t_nms_bboxes, batch_t_nms_scores, batch_t_nms_labels, format_data, aug_orders, score_thr=self.fn_mining_score_thr, mode='unsup')
             # 可视化sgt+minging_gt(默认注释)
             # vis_sparse_data(format_data, [[],[]], [[],[]], save_dir='./vis_minging_gt')
 
 
 
-        '''稀疏监督分支(before burn-in) / student稀疏监督训练(sparse-level) (after burn-in)'''
-        # student部分前向+计算损失
-        # NOTE:这里会和稀疏GT(挖掘出的正样本)也计算损失, 返回sparse_losses
-        sparse_losses, s_fpn_feat = self.student.forward_train(**format_data[aug_orders[0]])
+            '''稀疏监督分支(before burn-in) / student稀疏监督训练(sparse-level) (after burn-in)'''
+            # student部分前向+计算损失
+            # NOTE:这里会和稀疏GT(挖掘出的正样本)也计算损失, 返回sparse_losses
+            sparse_losses, s_fpn_feat = self.student.forward_train(**format_data[aug_orders[0]], neg_weight_thr=0.5)
 
 
 
-        # 组织稀疏监督损失
-        for key, val in sparse_losses.items():
-            if key[:4] == 'loss':
-                if isinstance(val, list):
-                    losses[f"{key}_sup"] = [self.sup_weight * x for x in val]
+            # 组织无监督损失
+            for key, val in sparse_losses.items():
+                if key[:4] == 'loss':
+                    if isinstance(val, list):
+                        losses[f"{key}_unsup"] = [self.sup_weight * x for x in val]
+                    else:
+                        losses[f"{key}_unsup"] = self.sup_weight * val
                 else:
-                    losses[f"{key}_sup"] = self.sup_weight * val
-            else:
-                losses[key] = val
+                    losses[key] = val
 
 
 
@@ -188,20 +205,16 @@ class RotatedSparselyUnbaisedTeacherGI(RotatedSemiDetector):
             rot_sbboxes = [self.SSBranch.inv_rotate_bboxes(1024, rot_sbbox, rand_angle) for rot_sbbox in rot_sbboxes]
             # 二分图匹配将ori与rot框进行一一配对
             batch_ori_idx, batch_rot_idx = self.SSBranch.assigner.assign(ori_sbboxes, rot_sbboxes, format_data[aug_orders[0]])
-            # print(batch_ori_idx[0].shape, batch_ori_idx[1].shape)
             # 可视化
             # self.SSBranch.vis_batch_rot_img(
             #     format_data[aug_orders[0]]['img'][:bs], format_data[aug_orders[0]]['img'][:bs], 
             #     ori_sbboxes, rot_sbboxes, ori_nc_scores, rot_nc_scores,
             #     batch_ori_idx, batch_rot_idx,
-            #     format_data[aug_orders[0]]['img_metas'], ori_mask, rand_angle, isflip, './vis_rot_img'
+            #     format_data[aug_orders[0]]['img_metas'], ori_mask, rand_angle, isflip, './vis_ori_rot_img'
             # )
 
-            reg_loss_w, cls_loss_w = 1.0, 0.5
-            reg_loss, cls_loss = self.SSBranch.loss(ori_sbboxes, rot_sbboxes, ori_nc_scores, rot_nc_scores, batch_ori_idx, batch_rot_idx, reg_loss_w, cls_loss_w)
-            losses['ss_reg_loss'] = reg_loss
-            losses['ss_cls_loss'] = cls_loss
-
+            reg_loss = self.SSBranch.loss(ori_sbboxes, rot_sbboxes, ori_nc_scores, rot_nc_scores, batch_ori_idx, batch_rot_idx)
+            losses['ss_reg_loss'] = reg_loss * 0.1
 
     
         self.iter_count += 1
@@ -219,25 +232,42 @@ class RotatedSparselyUnbaisedTeacherGI(RotatedSemiDetector):
         gt_bboxes = kwargs.get('gt_bboxes')
         gt_labels = kwargs.get('gt_labels')
         # preprocess
-        format_data = dict()
+        sup_format_data, unsup_format_data = dict(), dict()
         for idx, img_meta in enumerate(img_metas):
             tag = img_meta['tag']
-            if tag not in format_data.keys():
-                format_data[tag] = dict()
-                format_data[tag]['img'] = [imgs[idx]]
-                # 'filename', 'ori_filename', 'ori_shape', 'img_shape', 'pad_shape', 'scale_factor', 'flip', 'flip_direction', 'img_norm_cfg', 'tag', 'batch_input_shape'
-                format_data[tag]['img_metas'] = [img_metas[idx]]
-                format_data[tag]['gt_bboxes'] = [gt_bboxes[idx]]
-                format_data[tag]['gt_labels'] = [gt_labels[idx]]
-            else:
-                format_data[tag]['img'].append(imgs[idx])
-                format_data[tag]['img_metas'].append(img_metas[idx])
-                format_data[tag]['gt_bboxes'].append(gt_bboxes[idx])
-                format_data[tag]['gt_labels'].append(gt_labels[idx])
-        for key in format_data.keys():
-            format_data[key]['img'] = torch.stack(format_data[key]['img'], dim=0)
-        
-        return format_data
+            if tag!='sup_weak':
+                if tag not in unsup_format_data.keys():
+                    unsup_format_data[tag] = dict()
+                    unsup_format_data[tag]['img'] = [imgs[idx]]
+                    # 'filename', 'ori_filename', 'ori_shape', 'img_shape', 'pad_shape', 'scale_factor', 
+                    # 'flip', 'flip_direction', 'img_norm_cfg', 'tag', 'batch_input_shape'
+                    unsup_format_data[tag]['img_metas'] = [img_metas[idx]]
+                    unsup_format_data[tag]['gt_bboxes'] = [gt_bboxes[idx]]
+                    unsup_format_data[tag]['gt_labels'] = [gt_labels[idx]]
+                else:
+                    unsup_format_data[tag]['img'].append(imgs[idx])
+                    unsup_format_data[tag]['img_metas'].append(img_metas[idx])
+                    unsup_format_data[tag]['gt_bboxes'].append(gt_bboxes[idx])
+                    unsup_format_data[tag]['gt_labels'].append(gt_labels[idx])
+            if tag=='sup_weak':
+                if tag not in sup_format_data.keys():
+                    sup_format_data[tag] = dict()
+                    sup_format_data[tag]['img'] = [imgs[idx]]
+                    sup_format_data[tag]['img_metas'] = [img_metas[idx]]
+                    sup_format_data[tag]['gt_bboxes'] = [gt_bboxes[idx]]
+                    sup_format_data[tag]['gt_labels'] = [gt_labels[idx]]
+                else:
+                    sup_format_data[tag]['img'].append(imgs[idx])
+                    sup_format_data[tag]['img_metas'].append(img_metas[idx])
+                    sup_format_data[tag]['gt_bboxes'].append(gt_bboxes[idx])
+                    sup_format_data[tag]['gt_labels'].append(gt_labels[idx])
+
+        for key in sup_format_data.keys():
+            sup_format_data[key]['img'] = torch.stack(sup_format_data[key]['img'], dim=0)
+        for key in unsup_format_data.keys():
+            unsup_format_data[key]['img'] = torch.stack(unsup_format_data[key]['img'], dim=0)
+
+        return sup_format_data, unsup_format_data
     
 
 
@@ -317,7 +347,6 @@ def vis_sparse_data(format_data, batch_t_bboxes, batch_t_labels, save_dir='./vis
     batch_weak_img_meta = format_data['unsup_weak']['img_metas']
     batch_weak_gt_bboxes = format_data['unsup_weak']['gt_bboxes']
     batch_weak_gt_labels = format_data['unsup_weak']['gt_labels']
-
     # 遍历 batch 中的每一对图像
     for i, (strong_img, strong_img_meta, strong_gt_bboxes, strong_gt_labels, 
              weak_img, weak_img_meta, weak_gt_bboxes, weak_gt_labels,
@@ -395,6 +424,51 @@ def vis_sparse_data(format_data, batch_t_bboxes, batch_t_labels, save_dir='./vis
         plt.title(f'Weak Augmented Image')
         plt.axis('off')
         
+        # 调整布局并保存
+        plt.tight_layout()
+        plt.savefig(os.path.join(save_dir, img_name), bbox_inches='tight', dpi=150)
+        plt.close()
+
+
+
+
+
+def vis_sup_data(format_data, save_dir='./vis_sup_img'):
+    if not os.path.exists(save_dir):os.makedirs(save_dir)
+    # 有监督图像 [bs, 3, 1024, 1024]
+    batch_img = format_data['sup_weak']['img']
+    batch_img_meta = format_data['sup_weak']['img_metas']
+    batch_gt_bboxes = format_data['sup_weak']['gt_bboxes']
+    batch_gt_labels = format_data['sup_weak']['gt_labels']
+
+    # 遍历 batch 中的每一对图像
+    for img, img_meta, gt_bboxes, gt_labels in zip(batch_img, batch_img_meta, batch_gt_bboxes, batch_gt_labels):
+        '''图像处理'''
+        # 原图预处理
+        std = np.array([58.395, 57.12, 57.375]) / 255.
+        mean = np.array([123.675, 116.28, 103.53]) / 255.
+        # 处理 img
+        img = img.permute(1, 2, 0).cpu().numpy()
+        img = np.clip(img * std + mean, 0, 1)
+        img = (img * 255).astype(np.uint8) 
+        img = np.ascontiguousarray(img) # 确保图像数据是连续内存布局
+
+        '''box绘制'''
+        # 5参转8参
+        poly_gts = obb2poly(gt_bboxes).cpu().numpy().astype(np.int32)
+        # 可视化strong gts + weak gts
+        img = OpenCVDrawBox(img, poly_gts, (0,255,0), 2)
+        
+        '''绘制+保存'''
+        # 获取图像名
+        img_name = img_meta['ori_filename']
+        # 创建一行两列的画布
+        plt.figure(figsize=(6, 6))
+        # 绘制 strong_img
+        plt.subplot(1, 1, 1)
+        plt.imshow(img)
+        plt.title(f'Image')
+        plt.axis('off')
         # 调整布局并保存
         plt.tight_layout()
         plt.savefig(os.path.join(save_dir, img_name), bbox_inches='tight', dpi=150)

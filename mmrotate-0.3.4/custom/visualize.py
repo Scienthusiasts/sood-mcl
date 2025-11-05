@@ -27,11 +27,10 @@ def OpenCVDrawBox(image, poly_boxes, color, thickness=1):
             None
     '''
     H, W = image.shape[:2]
-    if len(poly_boxes) > 0:
-        for i, poly_box in enumerate(poly_boxes):
-            box = np.array([round(b) for b in poly_box]).reshape((-1, 1, 2))
-            # obj的框
-            cv2.drawContours(image, [box], 0, color=color, thickness=thickness)
+    for i, poly_box in enumerate(poly_boxes):
+        box = np.array([round(b) for b in poly_box]).reshape((-1, 1, 2))
+        # obj的框
+        cv2.drawContours(image, [box], 0, color=color, thickness=thickness)
     # 保存
     return image
 
@@ -498,13 +497,10 @@ def vis_HM_scores(batch_pred_logits, batch_match_gt_logits, batch_img_meta, save
 
 
 
-def vis_gi_head_bboxes_batch(img_metas, bs, batch_idx, gt_bboxes, nms_bboxes, gi_boxes, loss_w, root_dir):
+def vis_gi_head_bboxes_batch(img_metas, bs, batch_idx, nms_bboxes, gi_boxes, root_dir):
     '''无监督分支可视化微调模块的推理结果(dense, refined, pgt)
         Args:
             img_metas:   图像和图像信息
-            bs:
-            batch_idx:
-            gt_bboxes:
             nms_bboxes:  nms后保留的结果
             gi_boxes:    gi_head微调结果  
             root_dir:    可视化结果保存路径
@@ -517,7 +513,6 @@ def vis_gi_head_bboxes_batch(img_metas, bs, batch_idx, gt_bboxes, nms_bboxes, gi
     # 每张图片分别可视化
     for batch in range(bs):
         batch_mask = batch_idx==batch
-        gt_box = gt_bboxes[batch]
         gi_box = gi_boxes[batch_mask]
         nms_box = nms_bboxes[batch_mask]
         img_name = img_names[batch]
@@ -527,70 +522,18 @@ def vis_gi_head_bboxes_batch(img_metas, bs, batch_idx, gt_bboxes, nms_bboxes, gi
         img = images[batch].permute(1,2,0).cpu().numpy()
         img = np.clip(img * std + mean, 0, 1)
         img = (img * 255.).astype(np.uint8)
-        # 确保图像数据是连续内存布局
-        img = np.ascontiguousarray(img) 
+        img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
         # 5参转8参
-        poly_nms_rbb = obb2poly(nms_box).detach().cpu().numpy()
-        poly_refine_rbb = obb2poly(gi_box.clone()).detach().cpu().numpy()
-        poly_gt_rbb = obb2poly(gt_box.clone()).detach().cpu().numpy()
-        # 可视化sgt+pgt框
-        gt_img = OpenCVDrawBox(copy.deepcopy(img), poly_gt_rbb, (0,255,0), 2)
+        poly_nms_rbb = obb2poly(nms_box)
+        poly_refine_rbb = obb2poly(gi_box.clone())
         # 可视化nms保留框
-        img = OpenCVDrawBox(img, poly_nms_rbb, (255,0,0), 2)
+        img = OpenCVDrawBox(img, poly_nms_rbb.detach().cpu().numpy(), (0,0,255), 2)
         # 可视化refine proposals框
-        img = OpenCVDrawBox(img, poly_refine_rbb, (0,255,0), 2)
-
-        '''绘制loss_w'''
-        # 在每个预测框中心绘制类别和置信度得分(只绘制fn)
-        # 获取旋转框的中心点坐标
-        centers = gt_box[:, :2]  # [N, 2], 格式为(x, y)
-        # 遍历每个框和得分
-        for center, l_w in zip(centers, loss_w[batch_mask]):
-            x, y = int(center[0]), int(center[1])
-            # 绘制得分（保留2位小数）
-            text = f"{l_w:.2f}"
-            # 设置文本样式
-            font = cv2.FONT_HERSHEY_SIMPLEX
-            font_scale = 0.5
-            text_color = (255, 255, 255)  # 白色文字
-            bg_color = (0, 0, 0)          # 黑色背景
-            # 获取文本大小
-            text_size = cv2.getTextSize(text, font, font_scale, 1)[0]
-            # 绘制背景矩形（提高可读性）
-            cv2.rectangle(gt_img, 
-                        (x - text_size[0]//2 - 2, y - text_size[1]//2 - 2),
-                        (x + text_size[0]//2 + 2, y + text_size[1]//2 + 2),
-                        bg_color, -1)  # -1表示填充
-            # 绘制文本
-            cv2.putText(gt_img, text, (x - text_size[0]//2, y + text_size[1]//2),
-                    font, font_scale, text_color, 1, cv2.LINE_AA)
-
-
-        '''绘制+保存'''
-        # 创建一行两列的画布
-        plt.figure(figsize=(12, 6))
-        # 绘制 strong_img
-        plt.subplot(1, 2, 1)
-        plt.imshow(img)
-        plt.title(f'nms + refine')
-        plt.axis('off')
-        # 绘制 weak_img
-        plt.subplot(1, 2, 2)
-        plt.imshow(gt_img)
-        plt.title(f'pgt + sgt')
-        plt.axis('off')
-
+        img = OpenCVDrawBox(img, poly_refine_rbb.detach().cpu().numpy(), (0,255,0), 2)
         # 保存结果
         if not os.path.exists(root_dir):os.makedirs(root_dir)
         img_save_path = f"{root_dir}/{img_name}"
-        # 调整布局并保存
-        plt.tight_layout()
-        plt.savefig(img_save_path, bbox_inches='tight', dpi=150)
-        plt.close()
-
-
-
-
+        cv2.imwrite(img_save_path, img)
 
 
 def vis_gi_head_bboxes_single(image, img_name, nms_bboxes, nms_scores, nms_preds, gi_boxes, root_dir, vis_text=True):

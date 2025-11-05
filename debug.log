@@ -1,35 +1,3 @@
-# 推理整个验证集并可视化:
-# globalw val (sparsely ann)
-python test.py \
---config configs_dota15/sparse_new_idea/globalw_fcos_ss_gihead_dota10_10p_wosupbranch.py \
---checkpoint log/new_sparse/1.0/globalw_burn-in-120000_ga_10per/latest.pth \
---work-dir log/eval_result \
---gpu-ids 1 \
---eval mAP \
---out log/new_sparse/1.0/globalw_burn-in-120000_ga_10per/eval_result/eval.pkl \
---get-feature-map \
---cfg-options cfg.model.pretrained=None \
---show-score-thr 0.1 \
---show-dir log/new_sparse/1.0/globalw_burn-in-120000_ga_10per/eval_result/vis_result \
-
-
-# 推理测试集生成提交文件:
-# (sparsely ann)
-python test.py \
---config configs_dota15/sparse_new_idea_PECL/unbaisedteacher_orientedrcnn_baseline_dota10.py \
---checkpoint log/sparse_fnmining_gihead_PECL/1.0/unbiased-orcnn_burn-in-12800_fn-thr0.8_5per_trainval/best_0.598706_mAP.pth \
---work-dir log/sparse_fnmining_gihead_PECL/1.0/unbiased-orcnn_burn-in-12800_fn-thr0.8_5per_trainval/eval_result \
---gpu-ids 0 \
---format-only \
---eval-options submission_dir=log/sparse_fnmining_gihead_PECL/1.0/unbiased-orcnn_burn-in-12800_fn-thr0.8_5per_trainval/Task1_results
-
-
-
-# 终端输出日志重定向:
-sh run.sh > log/dtbaseline/DOTA1.5/10per_denoise/global-w/joint-score-beta-2.0_burn-in-12800_orcnn-head_all-refine-loss_box-O2M-loss_detach_GA_7/terminal_log.log 2>&1
-sh run.sh > log/dtbaseline/DOTA1.5/10per_denoise/global-w/joint-score-beta-2.0_burn-in-12800_GA_7/terminal_log.log 2>&1
-
-
 
 # pytorch下载
 pip install torch==2.1.0 torchvision==0.16.0 --index-url https://download.pytorch.org/whl/cu118

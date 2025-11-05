@@ -15,21 +15,24 @@ train_unsup_label_dir = f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/spars
 val_image_dir =         f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/val/images'
 val_label_dir =         f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/val/{version}/annfiles'
 test_image_dir =        f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/test/images'
+
+lr=0.01
 # 类别数
 nc = 15
-burn_in_steps = 50
+burn_in_steps = 12800
 # 生成teacher伪标签的置信度阈值
 score_thr = 0.01
 # 样本挖掘阈值:
-fn_mining_score_thr = 1.0
+fn_mining_score_thr = 0.1
 gi_head_pos_thres = 1.0
+# 是否使用负样本损失加权
+loss_weighting = True
 
-load_from = "log/sparse_fnmining_gihead_PECL/1.0/unbiased-orcnn_burn-in-12800_fn-thr1.0_gi0712-only-update-posthr1.0-noclsloss_queue-contproto1.0-gt0.1-loss_5per_trainval/best_0.653824_mAP.pth"
-# load_from = "log/sparse_fnmining_gihead_PECL/1.0/unbiased-orcnn_burn-in-12800_fn-thr1.0_gi0712-only-update-posthr1.0-noclsloss-detach_5per_trainval/iter_12800.pth"
-# load_from = None
 
-# 加了防止图像上没GT的时候 / 有参数没参与训练时 报错:
-find_unused_parameters=True
+
+# load_from = "log/sparse_fnmining_gihead_PECL/1.0/unbiased-orcnn_burn-in-12800_mining-thr0.1-roihead-negw5.0_5per_gi0804-thr1.0-onlyupdate_lr1e-2_trainval/best_0.72382_mAP.pth"
+load_from = None
+
 
 
 # 是否开启refine head
@@ -59,9 +62,18 @@ gi_head=dict(
     roi_pooling = 'share_fchead', 
     assigner='HungarianWithIoUMatching',
 )
+use_refine_head=False
+gi_head=None
 
 
-
+# 是否开启选择一致性自监督分支
+use_ss_branch=True
+ss_branch=dict(
+    nc=nc,
+    rand_angle_range=[45, 135], 
+    flip_p=0.0
+)
+# use_ss_branch=False
 
 
 
@@ -106,6 +118,9 @@ detector = dict(
             type='SmoothL1Loss', beta=0.1111111111111111, loss_weight=1.0)),
     roi_head=dict(
         type='SparseOrientedStandardRoIHead',
+        nc=nc,
+        # 负样本损失加权
+        loss_weighting=loss_weighting,
         bbox_roi_extractor=dict(
             type='RotatedSingleRoIExtractor',
             roi_layer=dict(
@@ -130,9 +145,11 @@ detector = dict(
                 target_means=(.0, .0, .0, .0, .0),
                 target_stds=(0.1, 0.1, 0.2, 0.2, 0.1)),
             reg_class_agnostic=True,
-            loss_cls=dict(
-                type='CrossEntropyLoss', use_sigmoid=False, loss_weight=1.0),
-            loss_bbox=dict(type='SmoothL1Loss', beta=1.0, loss_weight=1.0))),
+            loss_cls=dict(type='CrossEntropyLoss', use_sigmoid=False, loss_weight=1.0, reduction='none'),  
+            loss_bbox=dict(type='SmoothL1Loss', beta=1.0, loss_weight=1.0, reduction='none') 
+            # loss_cls=dict(type='CrossEntropyLoss', use_sigmoid=False, loss_weight=1.0),  
+            # loss_bbox=dict(type='SmoothL1Loss', beta=1.0, loss_weight=1.0) 
+            )),
     # 这部分充当去噪微调模块:
     gi_head=gi_head,
     train_cfg=dict(
@@ -194,10 +211,14 @@ model = dict(
     # 继承 mmrotate-0.3.4/mmrotate/models/detectors/base.py
     type="RotatedSparselyUnbaisedTeacherGI",
     fn_mining_score_thr=fn_mining_score_thr,
-    gi_head_pos_thres=gi_head_pos_thres,
     model=detector,
     # refine gi head:
     use_refine_head=use_refine_head,
+    gi_head_pos_thres=gi_head_pos_thres,
+    # ss branch:
+    use_ss_branch=use_ss_branch,
+    ss_branch=ss_branch,
+    
     train_cfg=dict(
         iter_count=0,
         burn_in_steps=burn_in_steps,
@@ -334,7 +355,7 @@ evaluation = dict(type="SubModulesDistEvalHook", interval=3200, metric='mAP',
                   save_best='mAP')
 
 # optimizer
-optimizer = dict(type='SGD', lr=0.0025, momentum=0.9, weight_decay=0.0001)
+optimizer = dict(type='SGD', lr=lr, momentum=0.9, weight_decay=0.0001)
 optimizer_config = dict(grad_clip=dict(max_norm=35, norm_type=2))
 
 # learning policy

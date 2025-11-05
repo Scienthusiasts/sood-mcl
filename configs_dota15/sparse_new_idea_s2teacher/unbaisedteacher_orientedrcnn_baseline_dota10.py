@@ -2,64 +2,42 @@ import torchvision.transforms as transforms
 from copy import deepcopy
 
 
-'''重要的参数写在前面:'''
-# DOTA数据集版本(1.0 or 1.5)
+angle_version = 'le90'
 version = 1.0
-ann_ratio = 5
-# 数据集路径(trainval)
-train_unsup_image_dir = f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/trainval/images'
-train_unsup_label_dir = f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/sparse_PECL/{version}/sparse_ann_{ann_ratio}per/trainval' 
+ann_ratio = 10
 # 数据集路径(train)
-# train_unsup_image_dir = f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train/images' 
-# train_unsup_label_dir = f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/sparse_PECL/{version}/sparse_ann_{ann_ratio}per/train' 
+train_unsup_image_dir = f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/train/images'
+train_unsup_label_dir = f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/sparse_s2teacher/train/{version}/annfiles_{ann_ratio}per'
 
 val_image_dir =         f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/val/images'
 val_label_dir =         f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/val/{version}/annfiles'
 test_image_dir =        f'/data/yht/data/DOTA-1.0-1.5_ss_size-1024_gap-200/test/images'
 
-angle_version = 'le90'
+lr=0.01
 # 类别数
 nc = 15
-# 无监督分支权重
-unsup_loss_weight = 1.0
-# 使用高斯椭圆标签分配 (注意GA分配得搭配QualityFocalLoss)
-bbox_head_type = 'SparseRotatedBLFCOSGAHeadWORegGT'
-loss_cls=dict(type='QualityFocalLoss', use_sigmoid=True, beta=2.0, loss_weight=1.0, activated=True, reduction='none')
-
-# 一些超参数
-pos_thres=1.0
-pos_beta=5.0
-neg_beta=5.0
-
-# 加了防止图像上没GT的时候报错:
-find_unused_parameters=True
-
 burn_in_steps = 12800
-# 是否导入权重
-# load_from = 'log/sparse_fnmining_gihead/1.0/burn-in-12800_ga_sfpm-thres0.1-fn-allweight-thres1.0-beta5.0_gihead-posthr0.7-noclsloss_reggt-thr0.9_10per/latest.pth'
+# 生成teacher伪标签的置信度阈值
+score_thr = 0.01
+# 样本挖掘阈值:
+fn_mining_score_thr = 0.1
+# 是否使用负样本损失加权
+loss_weighting = True
+
+# load_from = "log/sparse_fnmining_gihead_PECL/1.0/unbiased-orcnn_burn-in-12800_fn-thr1.0_5per_trainval/iter_12800.pth"
 load_from = None
-
-
-
-
-
-
-
-
-
 
 # model settings
 detector = dict(
-    # semi_mmrotate/models/detectors/sparse_rotated_baseline_refine_fcos.py ->
-    # 继承 mmrotate-0.3.4/mmrotate/models/detectors/rotated_fcos.py
-    type='SparseRotatedBLRefineFCOS',
+    # semi_mmrotate/models/detectors/semi_rotated_orientedrcnn.py (只改了forward_train()) -> 
+    # 继承 mmrotate-0.3.4/mmrotate/models/detectors/oriented_rcnn.py
+    type='SparseRotatedOrientedRCNN',
     backbone=dict(
         type='ResNet',
         depth=50,
         num_stages=4,
         out_indices=(0, 1, 2, 3),
         frozen_stages=1,
-        zero_init_residual=False,
         norm_cfg=dict(type='BN', requires_grad=True),
         norm_eval=True,
         style='pytorch',
@@ -68,37 +46,60 @@ detector = dict(
         type='FPN',
         in_channels=[256, 512, 1024, 2048],
         out_channels=256,
-        start_level=1,
-        add_extra_convs='on_output',  # use P5
-        num_outs=5,
-        relu_before_extra_convs=True),
-    bbox_head=dict(
-        type=bbox_head_type,
-        num_classes=nc,
+        num_outs=5),
+    rpn_head=dict(
+        type='SparseOrientedRPNHead',
         in_channels=256,
-        stacked_convs=4,
         feat_channels=256,
-        strides=[8, 16, 32, 64, 128],
-        center_sampling=True,
-        center_sample_radius=1.5,
-        norm_on_bbox=True,
-        centerness_on_reg=True,
-        separate_angle=False,
-        scale_angle=True,
+        version=angle_version,
+        anchor_generator=dict(
+            type='AnchorGenerator',
+            scales=[8],
+            ratios=[0.5, 1.0, 2.0],
+            strides=[4, 8, 16, 32, 64]),
         bbox_coder=dict(
-            type='DistanceAnglePointCoder', angle_version=angle_version),
-        loss_cls=loss_cls,
-        loss_bbox=dict(type='RotatedIoULoss', loss_weight=1.0, reduction='none'),
-        loss_centerness=dict(
-            type='CrossEntropyLoss', use_sigmoid=True, loss_weight=1.0, reduction='none'),
-        # 一些超参数
-        pos_thres=pos_thres,
-        pos_beta=pos_beta,
-        neg_beta=neg_beta,
-    ),
-    # 这部分充当去噪微调模块:
-    # (roi_head, train_cfg, test_cfg): reference: /data/yht/code/sood-mcl/mmrotate-0.3.4/configs/oriented_rcnn/oriented_rcnn_r50_fpn_1x_dota_le90.py
-    roi_head=None,
+            type='MidpointOffsetCoder',
+            angle_range=angle_version,
+            target_means=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            target_stds=[1.0, 1.0, 1.0, 1.0, 0.5, 0.5]),
+        loss_cls=dict(
+            type='CrossEntropyLoss', use_sigmoid=True, loss_weight=1.0), # , reduction='none'
+        loss_bbox=dict(
+            type='SmoothL1Loss', beta=0.1111111111111111, loss_weight=1.0)),
+    roi_head=dict(
+        type='SparseOrientedStandardRoIHead',
+        nc=nc,
+        # 负样本损失加权
+        loss_weighting=loss_weighting,
+        bbox_roi_extractor=dict(
+            type='RotatedSingleRoIExtractor',
+            roi_layer=dict(
+                type='RoIAlignRotated',
+                out_size=7,
+                sample_num=2,
+                clockwise=True),
+            out_channels=256,
+            featmap_strides=[4, 8, 16, 32]),
+        bbox_head=dict(
+            type='RotatedShared2FCBBoxHead',
+            in_channels=256,
+            fc_out_channels=1024,
+            roi_feat_size=7,
+            num_classes=15,
+            bbox_coder=dict(
+                type='DeltaXYWHAOBBoxCoder',
+                angle_range=angle_version,
+                norm_factor=None,
+                edge_swap=True,
+                proj_xy=True,
+                target_means=(.0, .0, .0, .0, .0),
+                target_stds=(0.1, 0.1, 0.2, 0.2, 0.1)),
+            reg_class_agnostic=True,
+            loss_cls=dict(type='CrossEntropyLoss', use_sigmoid=False, loss_weight=1.0, reduction='none'),  
+            loss_bbox=dict(type='SmoothL1Loss', beta=1.0, loss_weight=1.0, reduction='none') 
+            # loss_cls=dict(type='CrossEntropyLoss', use_sigmoid=False, loss_weight=1.0),  
+            # loss_bbox=dict(type='SmoothL1Loss', beta=1.0, loss_weight=1.0) 
+            )),
     train_cfg=dict(
         rpn=dict(
             assigner=dict(
@@ -149,28 +150,45 @@ detector = dict(
             nms_pre=2000,
             min_bbox_size=0,
             score_thr=0.05,
-            nms=dict(iou_thr=0.1, class_agnostic=True), # 阈值越小越苛刻
-            max_per_img=2000),
-        # 原本就有的:
-        nms_pre=2000,
-        min_bbox_size=0,
-        score_thr=0.05,
-        nms=dict(iou_thr=0.1),
-        max_per_img=2000,
-    )
-)
+            nms=dict(iou_thr=0.1),
+            max_per_img=2000)))
 
 model = dict(
-    type="RotatedSparseFCOS",
-    model=detector,
+    # semi_mmrotate/models/rotated_sparsely_unbaised_teacher.py ->
+    # 继承 semi_mmrotate/models/rotated_semi_detector.py ->
+    # 继承 mmrotate-0.3.4/mmrotate/models/detectors/base.py
+    type="RotatedSparselyUnbaisedTeacher",
     nc=nc,
+    # 对比学习需要提取roi_feats
+    bbox_roi_extractor=dict(
+        type='RotatedSingleRoIExtractor',
+        roi_layer=dict(
+            type='RoIAlignRotated',
+            out_size=7,
+            sample_num=2,
+            clockwise=True),
+        out_channels=256,
+        featmap_strides=[4, 8, 16, 32, 64]),
+    fn_mining_score_thr=fn_mining_score_thr,
+    model=detector,
     train_cfg=dict(
         iter_count=0,
         burn_in_steps=burn_in_steps,
         sup_weight=1.0,
-        unsup_weight=unsup_loss_weight,
+        unsup_weight=1.0,
         weight_suppress="linear",
-        logit_specific_weights=dict(),
+        rcnn_configs=dict(
+            nms_pre=2000,
+            min_bbox_size=0,
+            score_thr=score_thr,
+            nms=dict(iou_thr=0.1),
+            max_per_img=2000),
+        loss_configs=dict(
+            type='FocalLoss',
+            use_sigmoid=True,
+            gamma=2.0,
+            alpha=0.25,
+            loss_weight=1.0),
     ),
     test_cfg=dict(inference_on="teacher"),
 )
@@ -264,7 +282,6 @@ data = dict(
         type=dataset_type,
         img_prefix=test_image_dir,
         ann_file=test_image_dir,
-        # classes=classes,
         pipeline=test_pipeline,
     ),
     sampler=dict(
@@ -279,9 +296,6 @@ data = dict(
 
 
 
-
-
-
 custom_hooks = [
     dict(type="NumClassCheckHook"),
     dict(type="WeightSummary"),
@@ -291,13 +305,9 @@ custom_hooks = [
 # evaluation
 evaluation = dict(type="SubModulesDistEvalHook", interval=3200, metric='mAP',
                   save_best='mAP')
-# 单卡调试时推理报分布式的错，是BN的问题，在配置文件里加一个broadcast_这个参数
-# evaluation = dict(type="SubModulesDistEvalHook", interval=3200, metric='mAP',
-#                   save_best='mAP', broadcast_bn_buffer=False)
-
 
 # optimizer
-optimizer = dict(type='SGD', lr=0.0025, momentum=0.9, weight_decay=0.0001)
+optimizer = dict(type='SGD', lr=lr, momentum=0.9, weight_decay=0.0001)
 optimizer_config = dict(grad_clip=dict(max_norm=35, norm_type=2))
 
 # learning policy
@@ -319,7 +329,6 @@ log_config = dict(
     interval=50,
     hooks=[
         dict(type="TextLoggerHook"),
-        dict(type='TensorboardLoggerHook'),
         # dict(
         #     type="WandbLoggerHook",
         #     init_kwargs=dict(

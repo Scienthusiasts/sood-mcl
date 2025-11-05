@@ -6,9 +6,13 @@ from .oriented_standard_roi_head import OrientedStandardRoIHead
 from .roi_extractors import RotatedSingleRoIExtractor
 from .roi_trans_roi_head import RoITransRoIHead
 from .rotate_standard_roi_head import RotatedStandardRoIHead
+# gi_head
+from .gi_roi_head_0728 import GIHead
 
 __all__ = [
     'RotatedBBoxHead', 'RotatedConvFCBBoxHead', 'RotatedShared2FCBBoxHead',
     'RotatedStandardRoIHead', 'RotatedSingleRoIExtractor',
-    'OrientedStandardRoIHead', 'RoITransRoIHead', 'GVRatioRoIHead'
+    'OrientedStandardRoIHead', 'RoITransRoIHead', 'GVRatioRoIHead',
+    # gi_head
+    'GIHead'
 ]

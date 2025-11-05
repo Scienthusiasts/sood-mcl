@@ -383,7 +383,7 @@ class SparseRotatedBLFCOSGAHeadWORegGT(SparseRotatedBLFCOSHead):
         return cls_targets, bbox_targets, angle_targets, centerness_targets
 
 
-
+ 
 
 
 # 可视化:================================================================================================================================================================

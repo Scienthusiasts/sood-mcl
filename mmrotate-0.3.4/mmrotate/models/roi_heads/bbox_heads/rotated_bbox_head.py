@@ -11,6 +11,7 @@ from mmdet.models.utils import build_linear_layer
 from mmrotate.core import build_bbox_coder, multiclass_nms_rotated
 from ...builder import ROTATED_HEADS, build_loss
 
+import matplotlib.pyplot as plt
 
 @ROTATED_HEADS.register_module()
 class RotatedBBoxHead(BaseModule):

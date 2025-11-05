@@ -11,12 +11,11 @@ from mmrotate.models.builder import ROTATED_HEADS
 from mmrotate.models.roi_heads.rotate_standard_roi_head import RotatedStandardRoIHead
 from mmrotate.models.builder import (ROTATED_HEADS, build_head, build_roi_extractor,
                        build_shared_head)
-from mmcv.cnn.bricks.transformer import FFN, MultiheadAttention, TransformerLayerSequence
-from mmdet.core import multi_apply, unmap
+from mmcv.cnn.bricks.transformer import FFN, MultiheadAttention
+from mmdet.core import multi_apply
 from custom.utils import *
 from custom.visualize import *
-from custom.features_queue_w_iou import DistributedClassFeatureQueue
-from custom.loss import QFLv2, HungarianWithIoUMatching, proto_contrastive_loss, cosine_simmilarity
+from custom.loss import QFLv2, HungarianWithIoUMatching, cosine_simmilarity
 # for debug:
 # torch.autograd.set_detect_anomaly(True)
 
@@ -113,12 +112,10 @@ class GroupAggregation(nn.Module):
         self.group_ffn = FFN(embed_dims=self.hidden_dim, feedforward_channels=2048)
         self.group_ffn_norm = build_norm_layer(dict(type='LN'), self.hidden_dim)[1]
 
-    def forward(self, q_feats, k_feats, v_feats):
-        """GroupAggregation 前向
+    def forward(self, dense_roi_feats):
+        """如果存在有GTBox和任何NMSBox都匹配不上, 则把这个GTBox加入到NMSBox中(仅在训练时调用)
             Args:
-                q_feats: [total_group_nums, nums_per_group,  256]
-                k_feats: [total_group_nums, nums_per_group,  256]
-                v_feats: [total_group_nums, nums_per_group,  256]
+                dense_roi_feats: [total_group_nums, nums_per_group,  256]
 
             Return:
 
@@ -129,14 +126,15 @@ class GroupAggregation(nn.Module):
         # MHGA(MHSA的变体): 只取每个组的第一个预测作为query, 简化运算(这个预测代表每个group中最好的预测, 这个预测和其他预测交互就行了, 其他无所谓)
         # MHGA + LN:  out = Q = [total_group_nums, 1, 256], k = v = [total_group_nums, nums_per_group, 256]
         if self.only_top1:
-            q_feats = q_feats[:, 0, :].unsqueeze(1)
+            Q_roi_feat = dense_roi_feats[:, 0, :].unsqueeze(1)
+        else:
+            Q_roi_feat = dense_roi_feats
+        aggr_roi_feat = self.group_attn(query=Q_roi_feat, key=dense_roi_feats, value=dense_roi_feats)
+        aggr_roi_feat = self.group_attn_norm(aggr_roi_feat + Q_roi_feat)
 
-        aggr_feats = self.group_attn(query=q_feats, key=k_feats, value=v_feats)
-        aggr_feats = self.group_attn_norm(aggr_feats + q_feats)
-
-        out_feats = self.group_ffn(aggr_feats)
-        out_feats = self.group_ffn_norm(out_feats + aggr_feats)
-        return out_feats
+        out_roi_feat = self.group_ffn(aggr_roi_feat)
+        out_roi_feat = self.group_ffn_norm(out_roi_feat + aggr_roi_feat)
+        return out_roi_feat
 
 
 
@@ -144,7 +142,7 @@ class GroupAggregation(nn.Module):
 
 
 @ROTATED_HEADS.register_module()
-class GIRoIHead(BaseModule):
+class GIHead(BaseModule):
 
     def __init__(self,
                  bbox_roi_extractor,
@@ -156,7 +154,7 @@ class GIRoIHead(BaseModule):
                  **wargs
                  ):
 
-        super(GIRoIHead, self).__init__()
+        super(GIHead, self).__init__()
         self.mode = 'sup'
         self.eps = 1e-7
         self.nc = nc
@@ -179,13 +177,13 @@ class GIRoIHead(BaseModule):
         if roi_pooling == 'avg_pool':
             self.roi_pooling = nn.AdaptiveAvgPool2d(1)
 
-        # learnable类别prototype
-        self.cls_tokens = nn.Embedding(self.nc, self.hidden_dim)
         # pos_emb_proj
         self.pos_emb_proj = nn.Linear(5, self.hidden_dim)
         # group aggregation
-        self.CGA = GroupAggregation(self.hidden_dim, only_top1=False)
-        self.FGA = GroupAggregation(self.hidden_dim, only_top1=True)
+        self.FA = GroupAggregation(self.hidden_dim, only_top1=False)
+        self.GA = GroupAggregation(self.hidden_dim, only_top1=True)
+        # 特征维度映射(self.hidden_dim + self.nc -> self.hidden_dim)
+        self.cat_dense_roi_feats_proj = nn.Linear(self.hidden_dim + self.nc, self.hidden_dim)
 
         # 分类头
         self.cls_fcs = nn.ModuleList()
@@ -208,10 +206,7 @@ class GIRoIHead(BaseModule):
                 build_activation_layer(dict(type='ReLU', inplace=False))) # inplace=True
         self.fc_reg = nn.Linear(self.hidden_dim, 5)
 
-        # 对比学习类别prototypes
-        self.cls_prototypes = nn.Parameter(torch.randn(self.nc, self.hidden_dim))
-        # 对比学习用到的特征队列:
-        self.feats_queue = DistributedClassFeatureQueue(self.nc, self.hidden_dim, keep_iters=50)
+
 
 
     def add_GT2NMS_boxes_single(self, nms_bboxes, nms_labels, nms_scores, gt_bboxes, gt_labels, img_meta, pgt_scores=None):
@@ -304,19 +299,21 @@ class GIRoIHead(BaseModule):
             Returns: 
                 represent_interative_roi_feat: 经过组注意力交互过后的特征 [total_group_nums, nums_per_group, 256] 
         """
-        '''将dense_scores与cls_tokens交互后生成cls_feats'''
-        dense_cls_feats = torch.einsum("BNC, CD -> BND", dense_scores, self.cls_tokens.weight)
-        '''依据roi相对于簇中心的坐标生成位置编码, 加到feats上'''
+        '''将roi_feature与roi_scores拼接在一起'''
+        dense_roi_feats = torch.cat([dense_roi_feats, dense_scores], dim=-1)
+        # [total_group_nums, nums_per_group, 256+nc] -> [total_group_nums, nums_per_group, 256]
+        dense_roi_feats = self.cat_dense_roi_feats_proj(dense_roi_feats)
+        '''依据roi相对于簇中心的坐标生成位置编码, 加到dense_roi_feats上'''
         # 获得相对于每组第一个框的相对偏移坐标
         related_dense_rois = self.convert_to_relative_coordinates(dense_rois)
         # 通过线性映射为可学习位置编码
         pos_emb = self.pos_emb_proj(related_dense_rois)
-        dense_cls_feats += pos_emb
         dense_roi_feats += pos_emb
-
         '''Aggregation'''
-        aggr_roi_feats = self.CGA(q_feats=dense_roi_feats.clone(), k_feats=dense_cls_feats.clone(), v_feats=dense_roi_feats.clone())
-        top1_aggr_roi_feat = self.FGA(q_feats=aggr_roi_feats.clone(), k_feats=aggr_roi_feats.clone(), v_feats=aggr_roi_feats.clone())
+        aggr_roi_feats = self.FA(dense_roi_feats)
+        top1_aggr_roi_feat = self.GA(aggr_roi_feats)
+
+
         # [total_group_nums, 1, 256]
         return top1_aggr_roi_feat
 
@@ -448,12 +445,12 @@ class GIRoIHead(BaseModule):
 
         # 可视nms_bboxes和gi_head输出的bboxes对比(默认注释)
         # if gt_bbox.shape[1] == 6:
-        #     all_bboxes_preds = self.bbox_coder.decode(match_pred_gt_bboxes[0][valid_gt_mask], reg_delta[valid_gt_mask])
-        #     vis_gi_head_bboxes_batch(img_meta, len(batch_nms_bboxes), batch_idx[valid_gt_mask], match_pred_gt_bboxes[0][valid_gt_mask], all_bboxes_preds, './vis_gi_bboxes_unsup')
+        all_bboxes_preds = self.bbox_coder.decode(match_pred_gt_bboxes[0][valid_gt_mask], reg_delta[valid_gt_mask])
+        vis_gi_head_bboxes_batch(img_meta, len(batch_nms_bboxes), batch_idx[valid_gt_mask], match_pred_gt_bboxes[0][valid_gt_mask], all_bboxes_preds, './vis_gi_bboxes_unsup')
 
-        #     # vis_cls_score = cls_score.sigmoid()
-        #     # cat_nms_scores = torch.cat(batch_nms_scores, dim=0)
-        #     # vis_HM_scores(vis_cls_score.unsqueeze(0), match_gt_logits.unsqueeze(0), img_meta, './vis_unsup_score')
+            # vis_cls_score = cls_score.sigmoid()
+            # cat_nms_scores = torch.cat(batch_nms_scores, dim=0)
+            # vis_HM_scores(vis_cls_score.unsqueeze(0), match_gt_logits.unsqueeze(0), img_meta, './vis_unsup_score')
 
 
         '''分类损失'''
@@ -462,25 +459,8 @@ class GIRoIHead(BaseModule):
         cls_loss = self.cls_loss(cls_score, match_gt_logits, use_weight=True, beta=2.0, reduction='none').mean()*0
 
 
-
-        '''TODO: 0719 gi_roi_feats对比学习'''
-        # iou_costs后续可以对对比损失加权
-        batch_roi_ious = [1. - torch.min(cost, dim=0, keepdim=True)[0] for cost in batch_iou_cost]
-        roi_ious = torch.cat(batch_roi_ious, dim=1).reshape(-1)[valid_gt_mask]
-        # roi_scores后续可以对对比损失加权
-        # roi_nc_scores = torch.cat(batch_nms_scores, dim=0)[valid_gt_mask]
-        # roi_scores, roi_pred_labels = torch.max(roi_nc_scores, dim=-1)
-
-        roi_labels = torch.max(match_gt_logits, dim=-1)[1][valid_gt_mask]
-        roi_feats = gi_roi_feats[valid_gt_mask]
-        # cont_proto_loss, cont_gt_loss = self.queue_proto_contrast_learning(roi_ious, roi_labels, roi_feats)
-        cont_proto_loss, cont_gt_loss = self.proto_contrast_learning(roi_ious, roi_labels, roi_feats)
-
-
         # 总损失
         losses = {
-            'cont_proto_loss': cont_proto_loss * 1.0,
-            'cont_gt_loss': cont_gt_loss * 0.1,
             'gi_cls_loss':cls_loss, 
             'gi_reg_loss':bbox_loss,
             'iou_improve':diff_iou
@@ -488,113 +468,6 @@ class GIRoIHead(BaseModule):
         return losses
 
 
-
-
-
-
-    # def queue_proto_contrast_learning(self, roi_ious, roi_labels, roi_feats):
-    #     """对那些正样本进行对比学习
-    #         Args:
-    #             roi_ious:   [pos_box_nums     ], roi与匹配上的gt的iou(后续可以对对比损失加权), requires_grad=True
-    #             roi_labels: [pos_box_nums     ], roi对应匹配上的gt的类别, requires_grad=False
-    #             roi_feats:  [pos_box_nums, 256], roi特征, requires_grad=False
-
-    #         Return:
-
-    #     """
-    #     '''1. 更新队列'''
-    #     self.feats_queue.push(roi_feats, roi_ious, roi_labels)
-    #     self.feats_queue.pop()
-    #     '''2. 取出队列中所有样本'''
-    #     all_feats, all_ious, all_labels = [], [], []
-    #     for i in range(self.nc):
-    #         feats, ious = self.feats_queue.get_feats_by_class(i)
-    #         feats_len = feats.shape[0]
-    #         if feats_len > 0:
-    #             all_feats.append(feats)
-    #             all_ious.append(ious)
-    #             all_labels.append(torch.full((feats_len, ), i, dtype=torch.long, device=feats.device))
-    #     # 把所有类别拼在一起
-    #     all_feats = torch.cat(all_feats, dim=0)
-    #     all_ious = torch.cat(all_ious, dim=0)
-    #     all_labels = torch.cat(all_labels, dim=0)
-    #     # 每个类别的样本数量
-    #     nums_per_class = self.feats_queue.__len__()
-
-    #     cont_loss = proto_contrastive_loss(self.cls_prototypes, all_feats, all_labels, weight_factor=all_ious, class_counts=nums_per_class)
-    #     return cont_loss
-        
-
-
-    def queue_proto_contrast_learning(self, roi_ious, roi_labels, roi_feats):
-        """对那些正样本进行对比学习(使用队列考虑最近50iter内的所有正样本)
-            Args:
-                roi_ious:   [pos_box_nums     ], roi与匹配上的gt的iou(后续可以对对比损失加权), requires_grad=True
-                roi_labels: [pos_box_nums     ], roi对应匹配上的gt的类别, requires_grad=False
-                roi_feats:  [pos_box_nums, 256], roi特征, requires_grad=False
-
-            Return:
-
-        """
-        '''1. 更新队列'''
-        self.feats_queue.push(roi_feats, roi_ious, roi_labels)
-        self.feats_queue.pop()
-        '''2. 取出队列中所有样本'''
-        all_feats, all_labels = [], []
-        for i in range(self.nc):
-            feats, ious = self.feats_queue.get_feats_by_class(i)
-            feats_len = feats.shape[0]
-            if feats_len > 0:
-                all_feats.append(feats.mean(dim=0, keepdim=True))
-                all_labels.append(torch.full((1, ), i, dtype=torch.long, device=feats.device))
-        # 把所有类别拼在一起
-        all_feats = torch.cat(all_feats, dim=0)
-        all_labels = torch.cat(all_labels, dim=0)
-
-        labels = torch.arange(len(all_feats), device=all_feats.device)
-        cont_proto_gt_loss = proto_contrastive_loss(all_feats, self.cls_prototypes[all_labels], labels)
-        cont_gt_proto_loss = proto_contrastive_loss(self.cls_prototypes, all_feats, all_labels)
-        cont_proto_loss = 0.5 * (cont_proto_gt_loss + cont_gt_proto_loss)
-        # 当前迭代的样本与proto对比
-        cont_gt_loss = proto_contrastive_loss(self.cls_prototypes.detach(), roi_feats, roi_labels)
-
-        return cont_proto_loss, cont_gt_loss
-        
-
-
-    def proto_contrast_learning(self, roi_ious, roi_labels, roi_feats):
-        """对那些正样本进行对比学习
-            Args:
-                roi_ious:   [pos_box_nums     ], roi与匹配上的gt的iou(后续可以对对比损失加权), requires_grad=True
-                roi_labels: [pos_box_nums     ], roi对应匹配上的gt的类别, requires_grad=False
-                roi_feats:  [pos_box_nums, 256], roi特征, requires_grad=False
-
-            Return:
-
-        """
-        # 提取出每个类别的roi特征并取平均, 保证每个类别正样本只有一个, 但不一定所有类别都有正样本:
-        feats_per_cat, labels_per_cat = [], []
-        for i in range(self.nc):
-            cls_mask = roi_labels==i
-            if(cls_mask.sum() > 0):
-                feats_per_cat.append(roi_feats[cls_mask].mean(dim=0, keepdim=True))
-                labels_per_cat.append(torch.full((1, ), i, dtype=torch.long, device=roi_feats.device))
-        feats_per_cat = torch.cat(feats_per_cat, dim=0)
-        labels_per_cat = torch.cat(labels_per_cat, dim=0)
-
-        # cont_gt_loss: 当前sgt与proto对比(更新sgt) | cont_proto_loss: prototype与当前sgt对比(更新prototype)
-        # 对比矩阵[n, n] (n<=c, 当前batch只有所有类别的某些子集类别)
-        labels = torch.arange(len(labels_per_cat), device=labels_per_cat.device)
-        cont_gt_row_loss = proto_contrastive_loss(self.cls_prototypes.detach()[labels_per_cat], feats_per_cat, labels)
-        cont_gt_col_loss = proto_contrastive_loss(feats_per_cat, self.cls_prototypes.detach()[labels_per_cat], labels)
-        cont_proto_row_loss = proto_contrastive_loss(self.cls_prototypes[labels_per_cat], feats_per_cat.detach(), labels)
-        cont_proto_col_loss = proto_contrastive_loss(feats_per_cat.detach(), self.cls_prototypes[labels_per_cat], labels)
-
-        cont_proto_loss = 0.5 * (cont_proto_row_loss + cont_proto_col_loss)
-        cont_gt_loss = 0.5 * (cont_gt_row_loss + cont_gt_col_loss)
-        return cont_proto_loss, cont_gt_loss
-        
-    
 
 
 
@@ -632,10 +505,7 @@ class GIRoIHead(BaseModule):
             # 预测的类别和类别置信度
             cls_scores = cls_score[last_batch_num:last_batch_num+cur_batch_num]
             single_cls_scores, single_cls_preds = torch.max(cls_scores, dim=1)
-            # 通过特征与proto计算余弦相似度得到类别相似度
-            single_gi_roi_feats = gi_roi_feats[last_batch_num:last_batch_num+cur_batch_num]
-            single_feats_proto_sim = cosine_simmilarity(self.cls_prototypes, single_gi_roi_feats)
-            single_sim_scores, single_sim_preds = torch.max(single_feats_proto_sim, dim=1)
+
 
             last_batch_num += cur_batch_num
             # [nms_box_num, 7=(cx, cy, w, h, θ, cls_score, cls_label)]
@@ -646,7 +516,6 @@ class GIRoIHead(BaseModule):
             # vis_HM_scores(cls_scores.unsqueeze(0), vis_nms_scores.unsqueeze(0), img_meta, './vis_unsup_infer_score')
             # 可视nms_bboxes和gi_head输出的bboxes对比(默认注释)
             # vis_gi_head_bboxes_single(img_meta['img'][batch], img_meta['img_metas'][batch]['ori_filename'], single_nms_boxes, single_cls_scores, single_cls_preds, single_gi_bboxes, './vis_gi_bboxes_infer')
-            # vis_gi_head_bboxes_single(img_meta['img'][batch], img_meta['img_metas'][batch]['ori_filename'], single_nms_boxes, single_sim_scores, single_sim_preds, single_gi_bboxes, './vis_gi_bboxes_infer_sim')
         return batch_gi_box
 
 
